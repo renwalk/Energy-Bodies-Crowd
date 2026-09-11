@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Energy Bodies — Crowd Display</title>
+  <link rel="icon" href="data:,">
+  <!-- Local libs (blocking) -->
+  <!-- Load eb-init.js FIRST - before p5.js and sketch.js -->
+  <script src="./js/eb-init.js"></script>
+
+  <!-- Then load p5.js -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.4.0/lib/p5.min.js"></script>
+
+  <!-- Then load ml5 (multi-pose PoseNet needs the same build as the single-person project) -->
+  <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    .portrait body,
+    body.portrait {
+      transform-origin: center center;
+    }
+  </style>
+</head>
+
+<body>
+
+  <script>
+    // =====================================================
+    // Energy Bodies — Crowd Display Receiver (no HUD)
+    // Bridges WS messages from Control → sketch.js (no DOM UI)
+    // =====================================================
+    (function () {
+      // Exposed helpers your sketch.js can call
+      const Emitter = {
+        socket: null,
+        // Aggregate crowd metrics (headcount + averaged emotion/motion signals)
+        crowd(obj) { safeSend({ type: 'crowd', ...obj }); },
+        // Per-person keypoints for the Control dashboard's multi-skeleton view
+        people(list) { safeSend({ type: 'people', people: list }); },
+        tracking(on) { safeSend({ type: 'tracking', on: !!on }); }
+      };
+      window.EnergyBodiesDisplay = Emitter;
+
+      // Orientation handling → dispatch event for sketch.js
+      function applyOrientation(value) {
+        const cls = (value === 'portrait') ? 'portrait' : 'landscape';
+        document.body.classList.toggle('portrait', cls === 'portrait');
+        window.dispatchEvent(new CustomEvent('eb:orientation', { detail: { value: cls } }));
+      }
+
+      // WebSocket with auto-retry
+      let socket; let retry = 800; const MAX = 8000;
+      function wsUrl(port = 8080) {
+        const proto = (location.protocol === 'https:') ? 'wss' : 'ws';
+        return `${proto}://${location.hostname}:${port}`;
+      }
+      function connect() {
+        try { socket = new WebSocket(wsUrl(8080)); }
+        catch (e) { return setTimeout(connect, retry); }
+        Emitter.socket = socket;
+
+        socket.onopen = () => { retry = 800; };
+        socket.onclose = () => { setTimeout(connect, Math.min(MAX, (retry *= 1.6))); };
+        socket.onerror = () => { };
+        socket.onmessage = (event) => {
+          const handle = (txt) => { let msg; try { msg = JSON.parse(txt); } catch { return; } route(msg); };
+          if (event.data instanceof Blob) {
+            const r = new FileReader();
+            r.onload = () => handle(r.result);
+            r.readAsText(event.data);
+          } else {
+            handle(String(event.data));
+          }
+        };
+      }
+      connect();
+
+      function safeSend(obj) {
+        if (Emitter.socket && Emitter.socket.readyState === WebSocket.OPEN) {
+          try { Emitter.socket.send(JSON.stringify(obj)); } catch { }
+        }
+      }
+
+      // --- Defer-to-when-ready helper (prevents race with sketch.js binding)
+      function callWhen(fnName, attempt = 0) {
+        const fn = window[fnName];
+        if (typeof fn === 'function') return fn();
+        if (attempt < 20) return setTimeout(() => callWhen(fnName, attempt + 1), 100); // wait up to ~2s
+        console.warn(`[DISPLAY] ${fnName} not found after waiting`);
+      }
+
+      // Route control messages → sketch.js
+      function route(payload) {
+        const { type } = payload || {};
+        if (!type) return;
+
+        // Explicit startTracking from Control (deferred-safe)
+        if (type === 'startTracking') {
+          console.log('[DISPLAY] startTracking (deferred if needed)');
+          callWhen('startTracking');
+          EnergyBodiesDisplay.tracking(true);
+          return;
+        }
+
+        // Explicit beginSession from Control (deferred-safe)
+        if (type === 'beginSession') {
+          console.log('[DISPLAY] beginSession (deferred if needed)');
+          callWhen('beginSession');
+          return;
+        }
+
+        // Compact "action" API (start/stop/reset)
+        if (type === 'action') {
+          if (payload.action === 'start') {
+            console.log('[DISPLAY] action:start');
+            callWhen('startTracking');
+            callWhen('beginSession');
+            EnergyBodiesDisplay.tracking(true);
+            return;
+          }
+          if (payload.action === 'stop') {
+            console.log('[DISPLAY] action:stop');
+            callWhen('stopTracking');
+            EnergyBodiesDisplay.tracking(false);
+            return;
+          }
+          if (payload.action === 'reset') {
+            console.log('[DISPLAY] action:reset');
+            if (typeof window.resetAll === 'function') {
+              window.resetAll(); // full zero + stop tracking + drop all tracked people
+            } else {
+              console.warn('[DISPLAY] resetAll not found, dispatching eb:reset');
+              window.dispatchEvent(new CustomEvent('eb:reset'));
+            }
+            EnergyBodiesDisplay.tracking(false);
+            return;
+          }
+        }
+
+        // Orientation toggle
+        if (type === 'orientation') {
+          applyOrientation(payload.value);
+          return;
+        }
+
+        // Print (avg-first with snapshot fallback; deferred-safe)
+        if (type === 'print') {
+          console.log('[DISPLAY] print (avg-first, deferred if needed)');
+          if (typeof window.onPrint === 'function') { window.onPrint(); return; }
+          callWhen('onPrint');
+          return;
+        }
+      }
+
+      // Announce initial state (optional)
+      Emitter.tracking(false);
+    })();
+  </script>
+
+  <!-- Your renderer LAST so it can see EnergyBodiesDisplay -->
+  <script defer src="./js/sketch.js"></script>
+</body>
+
+</html>
