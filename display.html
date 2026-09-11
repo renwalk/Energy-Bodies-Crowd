@@ -48,7 +48,7 @@
       // Exposed helpers your sketch.js can call
       const Emitter = {
         socket: null,
-        // Aggregate crowd metrics (headcount + averaged emotion/motion signals)
+        // Aggregate crowd metrics (headcount + averaged movement)
         crowd(obj) { safeSend({ type: 'crowd', ...obj }); },
         // Per-person keypoints for the Control dashboard's multi-skeleton view
         people(list) { safeSend({ type: 'people', people: list }); },

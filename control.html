@@ -107,16 +107,15 @@
       grid-template-areas:
         "intro    headcount"
         "controls headcount"
-        "emotions crowdmap"
         "metrics  crowdmap";
     }
 
     @media (min-width: 1000px) {
       .wrap {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         grid-template-areas:
-          "intro    headcount emotions crowdmap"
-          "controls metrics   emotions crowdmap";
+          "intro    headcount crowdmap"
+          "controls metrics   crowdmap";
       }
     }
 
@@ -146,7 +145,6 @@
     #welcomeCard { grid-area: intro; }
     #intro { grid-area: intro; }
     #headcount { grid-area: headcount; }
-    #emotions { grid-area: emotions; }
     #metrics { grid-area: metrics; }
     #controls { grid-area: controls; }
     #crowdmap { grid-area: crowdmap; }
@@ -163,14 +161,6 @@
     .stat .val { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; opacity: .9; }
     .stat .bar { height: 10px; background: var(--track); border-radius: 999px; overflow: hidden; }
     .stat .bar > i { display: block; height: 100%; width: 0%; background: #9ad; transition: width 0.15s linear; }
-
-    .legend-dot { flex-shrink: 0; width: 16px; height: 11px; border-radius: 3px; background: #666; border: 1px solid #222; }
-    .dot-anxiety { background: repeating-linear-gradient(25deg,#f0f0f0 0px,#f0f0f0 2px,transparent 2px,transparent 4px), repeating-linear-gradient(-30deg,#bcbcbc 0px,#bcbcbc 2px,transparent 2px,transparent 5px); background-color: #222; }
-    .dot-sadness { background: linear-gradient(90deg, #1c3a63 0%, #2e6cb0 50%, #75b5ff 100%); }
-    .dot-joy { background: linear-gradient(90deg, #ffea7a 0%, #ffd94c 50%, #ffb800 100%); }
-    .dot-anger { background: repeating-linear-gradient(135deg,#ff9acb 0px,#ff9acb 2px,#ff4fa6 2px,#ff4fa6 4px); }
-    .dot-fear { background: repeating-linear-gradient(135deg,#f5f5f5 0px,#f5f5f5 2px,#000 2px,#000 3px); background-color:#000; border-color:#f0f0f0; }
-    .dot-calm { background: repeating-radial-gradient(circle at 0 120%,#000 0px,#000 1px,transparent 1px,transparent 6px); background-color:#f5f5f5; border-color:#3a3a3a; }
 
     .btns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     button {
@@ -251,7 +241,7 @@
       <h3>Session Guide</h3>
       <p class="intro-tagline">
         Press <strong>Start</strong> to begin tracking everyone in frame — each person's movement becomes their own
-        streams of color and line. Press <strong>Print</strong> to take home an image of the room's collective energy.
+        blob of light on the display. Press <strong>Print</strong> to take home an image of the room's collective energy.
       </p>
     </section>
 
@@ -275,28 +265,20 @@
       <button id="endSessionBtn" class="secondary-btn">End Session &amp; Return to Welcome</button>
     </section>
 
-    <section id="emotions" class="panel is-hidden">
-      <h3>Crowd Emotion (average)</h3>
-      <div class="stat-row" id="emotionStats"></div>
-    </section>
-
     <section id="metrics" class="panel is-hidden">
-      <h3>Crowd Motion (average)</h3>
+      <h3>Crowd Motion</h3>
       <div class="stat-row" id="motionStats"></div>
     </section>
 
     <section id="crowdmap" class="panel is-hidden">
       <h3>Live Crowd Map</h3>
-      <p class="intro-note" style="margin: 0 0 8px;">One dot per tracked person — size shows distance from camera, color shows their strongest emotion.</p>
+      <p class="intro-note" style="margin: 0 0 8px;">One dot per tracked person — color is that person's stable id color, size shows how much they're currently moving.</p>
       <canvas id="crowdCanvas"></canvas>
     </section>
   </main>
 
   <script>
-    const EMOTIONS = ["anxiety", "sadness", "joy", "anger", "fear", "calm"];
-    const EMOTION_DOT_CLASS = { anxiety: 'dot-anxiety', sadness: 'dot-sadness', joy: 'dot-joy', anger: 'dot-anger', fear: 'dot-fear', calm: 'dot-calm' };
-    const EMOTION_COLOR = { anxiety: '#cfcfcf', sadness: '#2e6cb0', joy: '#ffd94c', anger: '#ff4fa6', fear: '#f5f5f5', calm: '#8fb3ff' };
-    const MOTION_KEYS = [['velocity', 'Velocity'], ['structure', 'Structure'], ['balance', 'Balance'], ['posture', 'Posture Lean']];
+    const MOTION_KEYS = [['velocity', 'Avg Velocity']];
     const WS_PORT = 8080;
 
     let socket = null; let retryMs = 800;
@@ -364,11 +346,9 @@
     // =============================
     // Crowd stats (read-only bars)
     // =============================
-    const emotionStatsEl = document.getElementById('emotionStats');
     const motionStatsEl = document.getElementById('motionStats');
     const headcountNumEl = document.getElementById('headcountNum');
     const headcountPeakEl = document.getElementById('headcountPeak');
-    const emotionMeters = new Map();
     const motionMeters = new Map();
     let peakHeadcount = 0;
     let latestPeople = [];
@@ -386,10 +366,6 @@
       return { fill, val };
     }
 
-    EMOTIONS.forEach(n => {
-      const dot = `<span class="legend-dot ${EMOTION_DOT_CLASS[n]}"></span><span>${n}</span>`;
-      emotionMeters.set(n, mkStat(emotionStatsEl, n, dot));
-    });
     MOTION_KEYS.forEach(([k, label]) => motionMeters.set(k, mkStat(motionStatsEl, k, label)));
 
     function updateCrowdStats(msg) {
@@ -397,14 +373,6 @@
       peakHeadcount = Math.max(peakHeadcount, msg.headcount ?? 0);
       headcountPeakEl.textContent = `Peak this session: ${peakHeadcount}`;
 
-      if (msg.emotions) {
-        EMOTIONS.forEach(n => {
-          const v = msg.emotions[n] ?? 0;
-          const m = emotionMeters.get(n);
-          m.fill.style.width = `${Math.max(0, Math.min(100, (v / 5) * 100))}%`;
-          m.val.textContent = v.toFixed(2);
-        });
-      }
       MOTION_KEYS.forEach(([k]) => {
         const v = typeof msg[k] === 'number' ? msg[k] : 0;
         const m = motionMeters.get(k);
@@ -418,7 +386,6 @@
       headcountNumEl.textContent = '0';
       peakHeadcount = 0;
       headcountPeakEl.textContent = 'Peak this session: —';
-      emotionMeters.forEach(m => { m.fill.style.width = '0%'; m.val.textContent = '—'; });
       motionMeters.forEach(m => { m.fill.style.width = '0%'; m.val.textContent = '—'; });
       latestPeople = [];
       drawCrowdMap();
@@ -435,11 +402,10 @@
       ctx.clearRect(0, 0, W, H);
       for (const p of latestPeople) {
         const x = p.x * W, y = p.y * H;
-        const r = 8 + 10 * Math.max(0.4, Math.min(1.6, p.depthScale ?? 1));
-        let dominant = 'calm', dv = -1;
-        for (const n of EMOTIONS) { const v = p.emotion?.[n] ?? 0; if (v > dv) { dv = v; dominant = n; } }
+        const v = Math.max(0, Math.min(1, (p.vel ?? 0) / 0.05));
+        const r = 8 + 12 * v;
         ctx.beginPath();
-        ctx.fillStyle = EMOTION_COLOR[dominant] || '#9ad';
+        ctx.fillStyle = `hsl(${p.hue ?? 0}, 60%, ${55 + v * 25}%)`;
         ctx.globalAlpha = 0.85;
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
@@ -458,7 +424,7 @@
       const welcomeCard = document.getElementById('welcomeCard');
       const beginBtn = document.getElementById('beginSessionBtn');
       const endSessionBtn = document.getElementById('endSessionBtn');
-      const gatedIds = ['intro', 'headcount', 'controls', 'emotions', 'metrics', 'crowdmap'];
+      const gatedIds = ['intro', 'headcount', 'controls', 'metrics', 'crowdmap'];
 
       beginBtn?.addEventListener('click', () => {
         welcomeCard?.classList.add('is-hidden');
