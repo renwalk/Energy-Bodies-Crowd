@@ -26,7 +26,7 @@ const TUNE = {
   tracking: {
     maxPeople: 12,          // PoseNet maxPoseDetections — tune down on slower hardware
     scoreThreshold: 0.4,
-    matchRadiusFrac: 0.22,  // fraction of video diagonal — how far a skeleton can drift frame-to-frame and still count as the same person
+    matchRadiusFrac: 0.3,   // fraction of video diagonal — how far a skeleton can drift frame-to-frame and still count as the same person before falling back to nearest-available matching (see matchPeopleToPoses)
     personTimeoutMs: 1000   // how long a person can go undetected before their orb is dropped
   },
   point: {
@@ -244,8 +244,9 @@ function matchPeopleToPoses(poses, now) {
     .filter(d => d.center);
 
   const used = new Array(detections.length).fill(false);
+  const unmatchedPeople = [];
 
-  // Match existing people to the nearest unused detection within range.
+  // Pass 1: match existing people to the nearest unused detection within the normal radius.
   for (const person of people.values()) {
     let best = -1, bestD = Infinity;
     for (let i = 0; i < detections.length; i++) {
@@ -256,19 +257,48 @@ function matchPeopleToPoses(poses, now) {
     if (best >= 0 && bestD < matchRadius) {
       used[best] = true;
       updatePersonPoints(person, detections[best].pose, now);
+    } else {
+      unmatchedPeople.push(person);
     }
   }
 
-  // Any leftover detections are new people.
-  for (let i = 0; i < detections.length; i++) {
-    if (used[i]) continue;
+  // Pass 2: fallback matching, no radius limit. If a tracked person moved fast enough (or their
+  // centroid jumped because a different set of keypoints was visible this frame) to miss the radius
+  // check above, that's still the same person — there's no other explanation for a leftover detection
+  // when we already have a leftover person expecting one. Without this pass, fast movement would drop
+  // the old Person (only after personTimeoutMs) while a brand new one spawns in its place, which is
+  // exactly what "the blob keeps multiplying as I move" looks like. Pair whatever's left over by
+  // nearest distance, so real duplicates/departures still only come from a genuine detection-count
+  // mismatch, not from a single person outrunning the match radius.
+  let remaining = [];
+  for (let i = 0; i < detections.length; i++) if (!used[i]) remaining.push(i);
+
+  while (unmatchedPeople.length && remaining.length) {
+    let bp = -1, bi = -1, bd = Infinity;
+    for (let pi = 0; pi < unmatchedPeople.length; pi++) {
+      const person = unmatchedPeople[pi];
+      for (let di = 0; di < remaining.length; di++) {
+        const d = dist(person.tx, person.ty, detections[remaining[di]].center.x, detections[remaining[di]].center.y);
+        if (d < bd) { bd = d; bp = pi; bi = di; }
+      }
+    }
+    const person = unmatchedPeople[bp];
+    const detIdx = remaining[bi];
+    used[detIdx] = true;
+    updatePersonPoints(person, detections[detIdx].pose, now);
+    unmatchedPeople.splice(bp, 1);
+    remaining.splice(bi, 1);
+  }
+
+  // Any detections still left over are genuinely new people.
+  for (const i of remaining) {
     if (people.size >= TUNE.tracking.maxPeople) break;
     const person = new Person(nextPersonId++, detections[i].center.x, detections[i].center.y);
     people.set(person.id, person);
     updatePersonPoints(person, detections[i].pose, now);
   }
 
-  // Drop anyone we haven't seen in a while.
+  // Drop anyone we haven't seen in a while (genuinely gone — occluded too long, or left frame).
   for (const [id, person] of people) {
     if (now - person.lastSeen > TUNE.tracking.personTimeoutMs) {
       people.delete(id);
