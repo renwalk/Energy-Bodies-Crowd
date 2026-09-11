@@ -31,10 +31,13 @@ const TUNE = {
   },
   point: {
     kpMinScore: 0.4,      // ignore keypoints PoseNet isn't confident about
-    posSmoothing: 0.45,   // how quickly a point's tracked position catches up to the raw detection
-    velEMA: 0.5,          // smoothing on each point's own velocity reading
+    posSmoothing: 0.22,   // how quickly a point's tracked position catches up to the raw detection (lower = smoother, more lag)
+    velEMA: 0.18,          // smoothing on each point's own velocity reading (lower = smoother, more lag)
+    velDeadzone: 0.0025,  // raw per-frame velocity below this is treated as 0 — absorbs PoseNet's baseline detection jitter on a still body
     velNormMin: 0.0,      // velocity (normalized by video diagonal per frame) that reads as "still"
-    velNormMax: 0.05      // velocity that reads as "fully activated"
+    velNormMax: 0.05,     // velocity that reads as "fully activated"
+    presenceInRate: 0.3,  // how fast a keypoint fades IN once PoseNet is confident about it again
+    presenceOutRate: 0.12 // how fast a keypoint fades OUT when lost — slow, so a borderline/flickering detection doesn't pop the bump on and off
   },
   orb: {
     rings: 18,             // latitude rings in the sphere grid
@@ -43,7 +46,7 @@ const TUNE = {
     rotSpeed: 0.0025,      // slow auto-rotation, purely so the sphere reads as a volume
     bumpScale: 1.1,        // how far a fully-activated keypoint bulges the surface, relative to the base radius
     bumpSigma: 0.6,        // angular falloff width (radians) of each keypoint's influence on the surface
-    bumpSmoothing: 0.22,   // per-vertex radius smoothing rate (higher = snappier morph, more jittery)
+    bumpSmoothing: 0.12,   // per-vertex radius smoothing rate (lower = smoother morph, more lag)
     minRadiusMult: 0.55, maxRadiusMult: 1.9,
     dotBaseSize: 2.2, dotDepthBoost: 2.4,
     dotAlphaBase: 0.30, dotAlphaBoost: 0.7,
@@ -204,7 +207,9 @@ class Person {
 
     this.points = {};
     for (const name of KEYPOINT_NAMES) {
-      this.points[name] = { x: cx, y: cy, vel: 0, score: 0 };
+      // presence fades smoothly in/out instead of snapping with the raw PoseNet score,
+      // so a keypoint flickering near the confidence threshold doesn't pop the orb's bump on/off.
+      this.points[name] = { x: cx, y: cy, vel: 0, score: 0, presence: 0 };
     }
 
     // Smoothed per-vertex radius multiplier for this person's orb (1 = resting sphere).
@@ -290,18 +295,20 @@ function updatePersonPoints(person, pose, now) {
     if (k && k.score > P.kpMinScore) {
       const dx = (k.position.x - pt.x) / diag;
       const dy = (k.position.y - pt.y) / diag;
-      const rawVel = Math.hypot(dx, dy);
+      const rawVel = Math.max(0, Math.hypot(dx, dy) - P.velDeadzone); // absorb baseline detection jitter before it ever reaches the smoothing
 
       pt.x = lerp(pt.x, k.position.x, P.posSmoothing);
       pt.y = lerp(pt.y, k.position.y, P.posSmoothing);
       pt.vel = lerp(pt.vel, rawVel, P.velEMA);
       pt.score = k.score;
+      pt.presence = lerp(pt.presence, 1, P.presenceInRate);
 
       visible++;
       sumX += pt.x; sumY += pt.y; sumVel += pt.vel;
     } else {
       pt.vel = lerp(pt.vel, 0, P.velEMA); // decay toward still when not seen
       pt.score = 0;
+      pt.presence = lerp(pt.presence, 0, P.presenceOutRate);
     }
   }
 
@@ -408,13 +415,13 @@ function orbBumpAt(person, dir) {
   let bump = 0;
   for (const name of KEYPOINT_NAMES) {
     const p = person.points[name];
-    if (p.score <= 0) continue;
+    if (p.presence <= 0.01) continue;
     const v = vNorm(p.vel);
     if (v <= 0) continue;
     const pole = KEYPOINT_POLE_DIR[name];
     const cosAngle = constrain(dir.x * pole.x + dir.y * pole.y + dir.z * pole.z, -1, 1);
     const angle = Math.acos(cosAngle);
-    bump += v * Math.exp(-(angle * angle) / (2 * O.bumpSigma * O.bumpSigma));
+    bump += v * p.presence * Math.exp(-(angle * angle) / (2 * O.bumpSigma * O.bumpSigma));
   }
   return bump;
 }
