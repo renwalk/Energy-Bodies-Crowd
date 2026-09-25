@@ -21,25 +21,24 @@ once** and gives each person their own simple blob, instead of following a singl
   |---|---|
   | **Columns** | One per person detected |
   | **Shapes in a column** | That person's number of tracked body points (of PoseNet's 17), rounded up to an even number and split across the two sides — a full body is 9 per side, an upper body 6 |
-  | **Form** | That person's movement: a **boxy bowl** with nested boxes = still, a **pointed wedge** = a few body parts moving (a waving hand), a **round loop with a spiral** = most of the body moving |
+  | **Form** | That person's **body shape**, not their movement — as a continuous blend of three forms: **round** = soft and relaxed (slumped, leaning, bent limbs), **boxy** = rigid and upright (vertical spine, level shoulders, straight arms and legs), **wedge** = asymmetrical (left and right sides don't mirror each other — an arm raised, a shoulder dropped) |
   | **Color** | Stillness vs. motion: blue when still, through violet, to red when moving |
 
-  The forms are organic rather than geometric, in the spirit of oil-pastel sketches: wobbly outlines, smaller loops
-  nested inside (or a spiral), and a random lean and tilt to each, with a soft translucent fill so overlapping shapes
-  show through each other. Each form is generated once from a seed (so it never shimmers) and cached, then rescaled
-  to fill its cell exactly, which is what guarantees nothing can poke off the screen.
+  **Every shape is one continuous line** — a spiral that starts on the outer edge and winds inward. The round, boxy
+  and wedge forms are three versions of the same spiral with the same number of points, so any mix of the three is
+  also a valid spiral. That is what lets a person's shapes *morph* from one form to another as their body shape
+  changes, gliding over several seconds, instead of one shape disappearing and another appearing. A slow drifting
+  wobble runs through every line even when the person is perfectly still, so the whole image is in constant, gentle
+  flux. Shapes are translucent so overlapping ones show through each other, and each form is rescaled to fill its
+  cell exactly, which is what guarantees nothing can poke off the screen.
 
-  Movement is tuned to be calm: columns, spacing and color glide with a critically damped spring (starts gently, no
-  lurch, no overshoot), and the movement reading is quick to notice motion but slow to let go. A change to a
-  column's shape count or form must hold for over a second and then cross-fades in slowly, so detection flicker
-  never makes the image jump. People fade in and out rather than popping.
-- **No manual sliders, no emotion/region dashboard.** The single-person project let a facilitator hand-tune one
-  participant's emotion/region values from an iPad. There's no equivalent concept here — `control.html` is a
-  read-only dashboard: live headcount, average crowd movement, and a simple "crowd map" showing one dot per
-  tracked person (colored by their id — that per-person color is a dashboard-only convenience; the orb itself
-  has no color). Start / Stop / Reset / Print still work the same way.
-- **Session averaging and the print receipt are crowd-level and minimal.** A session tracks peak/average
-  headcount plus average crowd movement over the session; Print captures the current display plus that summary.
+  The number of shapes in a column glides too: when body points are gained or lost, the shapes slide to their new
+  spacing and a shape being gained grows from nothing (or one being lost shrinks away) rather than popping.
+
+  Movement is tuned to be calm: columns, spacing, color, form and shape count all glide with a critically damped
+  spring (starts gently, no lurch, no overshoot), and the movement reading behind the color is quick to notice
+  motion but slow to let go. Posture is read slowly too, so a passing gesture doesn't change the form. People fade
+  in and out rather than popping.
 
 ## Architecture
 
@@ -88,9 +87,14 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   raise it if small movements already read as fully in motion.
 - `TUNE.kaleido.reflectionsFrom` — `'bodyPoints'` (default): the number of shapes in a column comes from that
   person's tracked body points. `'people'`: one per person detected instead.
-- `TUNE.kaleido.stillThreshold` / `wholeBodyFrac` — where "still" ends (bowl) and how much of the body has to be
-  moving at once to count as whole-body (round loop) rather than localized (wedge).
-- `TUNE.kaleido.motionFullMean` — how much movement reads as fully "in motion" (fully red).
+- `TUNE.kaleido.asymThreshold` / `rigidThreshold` / `formSoftness` — where the form is half-way to a wedge (by
+  asymmetry) and half-way to boxy (by rigidity), and how wide those transitions are. **These are estimates, not
+  calibrated against real people** — if everyone comes out boxy, raise `rigidThreshold`; if relaxed people drift
+  toward wedges, raise `asymThreshold`. `symDeadzone` / `symFull` set how much left/right mismatch counts, and
+  `spineFullDeg` / `shoulderFullDeg` / `bentDeg` / `straightDeg` set what counts as tilted, un-level, bent and
+  straight.
+- `TUNE.kaleido.wobble` / `flux` — how far each line's outline wanders and how fast (the "constant flux").
+- `TUNE.kaleido.motionFullMean` — how much movement reads as fully "in motion" (fully red). Movement now only affects color.
 - `TUNE.kaleido.hueStill` / `hueMoving` / `saturation` / `brightness` / `opacity` — the color range and look.
 - `TUNE.kaleido.overlap` — how much bigger each shape is than its cell (1.0 = neighbors just touch; higher = more
   overlap). Together with `opacity` (lower = more see-through, but murkier color on black) this sets how much
@@ -98,12 +102,13 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - `TUNE.kaleido.maxBandFrac` — how wide a shape may get, as a fraction of the screen height. It keeps shapes from
   stretching into flat ovals when only a few people are present; with many people the columns simply share the
   width. `margin` is the empty border around the image.
-- `TUNE.kaleido.smooth` — **the main calm/lively dial.** Roughly how many seconds a column, the spacing between
-  columns, the color, and the overall fit take to glide to a new value. Bigger = slower and calmer.
+- `TUNE.kaleido.smooth` — **the main calm/lively dial.** Roughly how many seconds each of these takes to glide to a
+  new value: a column moving, the spacing between columns, the color, the overall fit, how fast a shape morphs
+  between forms (`form`), and how fast a column gains or loses a shape (`count`). Bigger = slower and calmer.
 - `TUNE.kaleido.motionAttack` / `motionRelease` — how quickly the movement reading rises when someone starts moving
   and falls when they stop. Lower release = color and shape linger longer before settling back.
-- `TUNE.kaleido.layoutDebounceMs` / `layoutFadeFrames` / `fadeInMs` — how long a new copy count or shape must hold,
-  how long the cross-fade takes, and how slowly a new person fades in.
+- `TUNE.kaleido.countDebounceMs` / `fadeInMs` — how long a new shape count must hold before the column starts
+  gliding to it, and how slowly a new person fades in.
 
 These defaults haven't been tuned against a live multi-person feed — start here and adjust after testing with
 an actual crowd on the venue's camera and hardware.
@@ -112,8 +117,9 @@ an actual crowd on the venue's camera and hardware.
 
 - Two-tone: the sketches often use a different color on each side of the mirror — e.g. still on one side, moving on
   the other.
-- More kinds of form (ears, lips, bowls, zigzags like in the sketches) chosen from richer movement measures than
-  still / some / most of the body — the mapping lives in one function (`classifyShape`).
+- More kinds of form (ears, lips, bowls, zigzags like in the sketches) — the forms are just per-point radius
+  profiles for the spiral (`SPIRAL` in `js/sketch.js`), so adding one means adding a profile and a posture cue to
+  blend it in with.
 - Use a person's position or distance from the camera (both are tracked) to place or size their column.
 - Add motion back in (a slow drift or breathing in the strokes, for example).
 
