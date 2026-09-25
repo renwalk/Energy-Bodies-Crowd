@@ -11,27 +11,22 @@ once** and gives each person their own simple blob, instead of following a singl
   skeleton a stable id across frames — PoseNet itself has no concept of identity, so this is what keeps one
   person's blob from swapping with someone else's as poses shuffle order frame to frame. A tracked person who
   isn't matched to a skeleton for `personTimeoutMs` (default 1s) is dropped.
-- **The visual no longer represents a body, and there's no emotion mapping.** Each tracked person's base form
-  is an abstract, colorless wireframe orb: a point-cloud sphere (`TUNE.orb.rings` × `TUNE.orb.segments` grid,
-  built once and shared by everyone). The 17 raw PoseNet keypoints are mapped onto 17 fixed points spread
-  evenly around that sphere (an arbitrary, non-anatomical assignment via a Fibonacci lattice — see
-  `KEYPOINT_POLE_DIR` in `js/sketch.js`), and each keypoint's velocity bulges the surface around its point.
-- **Each person's orb is the motif of a kaleidoscope**, ported from the moonflower sketch (rings of mirrored
-  copies, alternate rings offset half a segment, alternate copies mirrored, each rotated in place). Every
-  kaleidoscope parameter comes from that person's body:
+- **One image for the whole room, and no emotion mapping.** Instead of a visual per person, the display shows a
+  single kaleidoscope (layout ported from the moonflower sketch) centered on the screen and spanning its full
+  width. **Each person is one ring** — the first person detected is the innermost ring and every additional
+  person adds a ring outward. Rings re-space themselves as people come and go, so the outermost always reaches
+  the screen edges. Nothing rotates.
 
   | Kaleidoscope property | Driven by |
   |---|---|
-  | **x, y** | Torso-weighted body center (weighted by keypoint presence, so raising an arm doesn't drag the flower around) |
-  | **z → size** | PoseNet has no depth, so apparent body size (shoulder width, or torso length when hips are visible) stands in for distance: closer = bigger orb. Ring spacing scales with it. |
-  | **Reflections** | Visible body regions × 2, mirrored left/right. The six original regions — head, neck, arms/hands, chest, abdomen, legs/feet — count as present when the keypoints that define them are visible, so a full body gives 12 and an upper body only gives 8. A change must hold 600ms, then cross-fades in. |
-  | **Angle** | Left/right asymmetry of the pose: each left joint is mirrored across the body's own axis (shoulders → spine) and compared to its right counterpart. Symmetric = 0°; a raised arm or dropped shoulder twists every copy (up to 180°). |
-  | **Rings** | Total movement energy — the sum of every keypoint's 0–1 activation, so more body parts moving = more rings (capped at 5). The outermost ring fades in as energy climbs. Zero energy = just the base orb. |
-  | **Opacity** | Stillness vs. motion: faint when still, solid when moving (`invertOpacity` flips this). |
-  | **Speed** | Mean velocity of the keypoints that are actually moving → kaleidoscope rotation rate and the orb's own 3D spin. |
+  | **Rings** | One per person detected |
+  | **Reflections** (copies around a ring) | That person's number of tracked body points (of PoseNet's 17), rounded up to an even number so the mirrored copies close up — a full body gives 18, an upper body 12 |
+  | **Shape** | That person's movement: **square** = still, **triangle** = a few body parts moving (a waving hand), **circle** = most of the body moving |
+  | **Color** | Stillness vs. motion: blue when still, through violet, to red when moving |
 
-  Rendering: each orb is drawn once per frame into a per-person offscreen buffer and stamped for the base form
-  and every reflection, which is what keeps dozens of copies per person cheap.
+  Every other copy on a ring is mirrored and every other ring is offset half a segment, as in moonflower. A
+  change to a ring's copy count or shape must hold for 600ms and then cross-fades in, so detection flicker never
+  makes the image jump. People fade in and out rather than popping.
 - **No manual sliders, no emotion/region dashboard.** The single-person project let a facilitator hand-tune one
   participant's emotion/region values from an iPad. There's no equivalent concept here — `control.html` is a
   read-only dashboard: live headcount, average crowd movement, and a simple "crowd map" showing one dot per
@@ -85,37 +80,29 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - `TUNE.point.velNormMax` — the keypoint speed (normalized per-frame, relative to the video's diagonal) that
   reads as "fully activated." Lower this if the orb isn't bulging enough; raise it if it looks maxed out from
   small movements.
-- `TUNE.orb.rings` / `segments` — mesh density. More = a denser-looking grid, more GPU/CPU cost per person.
-- `TUNE.orb.bumpScale` / `bumpSigma` — how far a fully-activated keypoint bulges the surface, and how wide
-  (angularly) that bulge spreads across neighboring mesh points.
-- `TUNE.orb.bumpSmoothing` — how snappy vs. smoothed the morph itself is.
-- `TUNE.kaleido.baseRadiusFrac` / `ringSpacing` / `maxRings` — size of the base orb at baseline distance, how far
-  apart the rings sit, and the cap on the flower's size (the biggest lever for how much of the screen one
-  person takes up).
-- `TUNE.kaleido.baselineShoulderFrac` / `sizeMin` / `sizeMax` — what apparent body size counts as "baseline
-  distance", and how far the size can grow or shrink from it. **Set `baselineShoulderFrac` for your camera and
-  room first** — it's the shoulder width, as a fraction of the video width, of someone at a typical distance.
-- `TUNE.kaleido.energyToRings` — rings gained per unit of movement energy (1.0 = one fully-activated keypoint
-  per ring).
-- `TUNE.kaleido.motionFullMean` / `opacityStill` / `opacityMoving` / `invertOpacity` — how much movement reads as
-  "fully in motion", and the opacity range between still and moving.
-- `TUNE.kaleido.symDeadzone` / `symFull` / `angleMax` — how much left/right mismatch is forgiven as symmetric,
-  what reads as fully asymmetric, and the maximum in-place rotation.
-- `TUNE.kaleido.idleSpin` / `spinGain` / `idleRingSpin` / `ringSpinGain` — rotation rates when still and how
-  much velocity adds.
-- `TUNE.kaleido.regionOn` / `regionOff` / `reflDebounceMs` — how eagerly a body region counts as present, and
-  how long a change must hold before the reflection count changes.
-- `TUNE.kaleido.ease` — per-frame easing of each drawn value toward its pose-derived target.
+- `TUNE.kaleido.reflectionsFrom` — `'bodyPoints'` (default): each ring's copy count comes from that person's
+  tracked body points. `'people'`: every ring gets one copy per person detected instead.
+- `TUNE.kaleido.stillThreshold` / `wholeBodyFrac` — where "still" ends (square) and how much of the body has to be
+  moving at once to count as whole-body (circle) rather than localized (triangle).
+- `TUNE.kaleido.motionFullMean` — how much movement reads as fully "in motion" (fully red).
+- `TUNE.kaleido.hueStill` / `hueMoving` / `saturation` / `brightness` / `opacity` — the color range and look.
+- `TUNE.kaleido.ringFill` / `arcFill` — how large the shapes get relative to the gap between rings / between
+  neighbors on a ring (1.0 / 0.5 = they just touch; raise for overlap).
+- `TUNE.kaleido.layoutDebounceMs` / `layoutFadeFrames` — how long a new copy count or shape must hold, and how
+  long the cross-fade takes.
+- `TUNE.kaleido.ease` — how quickly rings glide into place and colors shift.
 
 These defaults haven't been tuned against a live multi-person feed — start here and adjust after testing with
 an actual crowd on the venue's camera and hardware.
 
 ## Where this could go next
 
-- Per-region modulation: each reflection segment currently just counts a body region; it could also respond to
-  that region's own movement.
-- Depth-sort or clip back-facing mesh lines instead of just dimming them, for a cleaner 3D read at close range.
-- Re-introduce color (e.g. from energy or velocity) now that the structure is in place.
+- Decide what each shape should mean — the shape/movement mapping lives in one function (`classifyShape`).
+- Use a person's position or distance from the camera (both are tracked) to place or size their ring.
+- Add motion back in (rotation driven by velocity, for example).
+
+The previous version — one kaleidoscope of 3D wireframe orbs per person — is preserved under the git tag
+`v4-kaleidoscope-orbs`.
 
 ---
 

@@ -1,23 +1,19 @@
 /* ============================================================================
-   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v4: kaleidoscope orbs)
-   No emotion mapping, and the visual doesn't represent a human body:
-     - PoseNet runs in 'multiple' detection mode (one skeleton per person)
-     - A lightweight nearest-neighbor tracker assigns each skeleton a stable
-       Person id across frames (PoseNet itself gives no identity)
-     - Each person's base form is an abstract wireframe point-cloud orb. The 17
-       keypoints are mapped onto 17 fixed points around the sphere (arbitrary,
-       not anatomical); each keypoint's velocity bulges the surface locally.
-     - Around that base orb, each person gets a kaleidoscope, ported from the
-       moonflower sketch (rings of mirrored copies of the motif). Its
-       parameters are driven by that person's body:
-         x, y         torso-weighted body center on screen
-         z (size)     apparent body size — closer to the camera = bigger orb
-         reflections  visible body regions (head, neck, arms/hands, chest,
-                      abdomen, legs/feet) × 2, mirrored left/right
-         angle        left/right asymmetry of the pose (0 = symmetric)
-         rings        total movement energy (sum of every keypoint's activation)
-         opacity      stillness (faint) vs. motion (solid)
-         speed        velocity of the moving keypoints → rotation rate
+   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v5: one shared kaleidoscope)
+   One image for the whole room instead of one per person:
+     - PoseNet runs in 'multiple' detection mode and a lightweight nearest-neighbor
+       tracker gives each person a stable id across frames
+     - The kaleidoscope is centered on the screen and spans its full width
+     - Each person is one RING: the first person is the innermost ring and every
+       additional person adds a ring outward. The rings re-space themselves so
+       the outermost one always reaches the screen edges.
+     - A ring's copies (its reflections) = that person's number of tracked body
+       points, rounded up to an even number so the mirrored copies close up
+     - The shape on a ring — circle, triangle or square — comes from that
+       person's movement: still = square, a few body parts moving = triangle,
+       whole-body movement = circle
+     - Stillness vs motion sets the color: blue (still) → violet → red (moving)
+     - Nothing rotates
    IMPORTANT: Load eb-init.js BEFORE this file!
    ============================================================================ */
 
@@ -30,10 +26,10 @@ if (typeof window.beginSession !== 'function') {
    ============================= */
 const TUNE = {
   tracking: {
-    maxPeople: 12,          // PoseNet maxPoseDetections — tune down on slower hardware
+    maxPeople: 12,          // PoseNet maxPoseDetections — also the most rings there can be
     scoreThreshold: 0.4,
     matchRadiusFrac: 0.3,   // fraction of video diagonal — how far a skeleton can drift frame-to-frame and still count as the same person before falling back to nearest-available matching (see matchPeopleToPoses)
-    personTimeoutMs: 1000   // how long a person can go undetected before their orb is dropped
+    personTimeoutMs: 1000   // how long a person can go undetected before their ring is dropped
   },
   point: {
     kpMinScore: 0.4,      // ignore keypoints PoseNet isn't confident about
@@ -43,50 +39,26 @@ const TUNE = {
     velNormMin: 0.0,      // velocity (normalized by video diagonal per frame) that reads as "still"
     velNormMax: 0.05,     // velocity that reads as "fully activated"
     presenceInRate: 0.3,  // how fast a keypoint fades IN once PoseNet is confident about it again
-    presenceOutRate: 0.12 // how fast a keypoint fades OUT when lost — slow, so a borderline/flickering detection doesn't pop the bump on and off
-  },
-  orb: {
-    rings: 12,             // latitude rings in the sphere grid (the motif is small now, so a lighter mesh than before)
-    segments: 20,          // longitude segments in the sphere grid
-    bumpScale: 1.1,        // how far a fully-activated keypoint bulges the surface, relative to the base radius
-    bumpSigma: 0.6,        // angular falloff width (radians) of each keypoint's influence on the surface
-    bumpSmoothing: 0.12,   // per-vertex radius smoothing rate (lower = smoother morph, more lag)
-    minRadiusMult: 0.55, maxRadiusMult: 1.9,
-    dotAlphaBase: 0.30, dotAlphaBoost: 0.7,
-    lineAlphaBase: 0.03, lineAlphaBoost: 0.22
+    presenceOutRate: 0.12 // how fast a keypoint fades OUT when lost — slow, so a borderline/flickering detection doesn't pop on and off
   },
   kaleido: {
-    // --- geometry ---
-    baseRadiusFrac: 0.035,  // resting radius of the base orb at baseline distance, as a fraction of canvas height
-    ringSpacing: 1.8,       // distance between rings, in multiples of the base orb radius
-    maxRings: 5,            // cap on the flower's size — a near person at full energy still has to share the screen
-    // --- rings ← total movement energy ---
-    energyToRings: 1.0,     // rings per 1.0 of energy (energy = sum of every keypoint's 0..1 activation; 17 keypoints max)
-    // --- opacity ← stillness vs motion ---
+    // --- layout: one kaleidoscope, centered on screen, outermost ring reaching the screen edges ---
+    ringFill: 0.55,         // max shape half-size relative to the gap between rings (0.5 = neighboring rings just touch)
+    arcFill: 1.0,           // max shape half-size relative to half the gap between neighbors on a ring (1.0 = they just touch)
+    opacity: 0.8,
+    // --- reflections (copies around each ring) ---
+    reflectionsFrom: 'bodyPoints', // 'bodyPoints': each ring gets that person's number of tracked body points
+                                   // 'people':     every ring gets one copy per person detected
+    // --- movement → shape ---
     motionFullMean: 0.3,    // mean keypoint activation that reads as "fully in motion"
-    opacityStill: 0.45,     // opacity of a motionless body (kept above 0 so people never disappear)
-    opacityMoving: 1.0,
-    invertOpacity: false,   // true = solid when still, translucent when moving
-    // --- angle ← left/right asymmetry ---
-    angleMax: Math.PI,      // a fully asymmetric pose rotates each copy in place by this much (radians)
-    symDeadzone: 0.12,      // mirror error (in shoulder-widths) treated as symmetric — natural posture isn't perfect
-    symFull: 0.9,           // mirror error that reads as "fully asymmetric"
-    // --- speed ← velocity of the moving keypoints ---
-    idleSpin: 0.0025,       // orb's own 3D spin when still (rad/frame) — keeps the sphere reading as a volume
-    spinGain: 0.04,         // extra orb spin at full speed
-    idleRingSpin: 0.0012,   // kaleidoscope rotation when still (rad/frame)
-    ringSpinGain: 0.018,    // extra kaleidoscope rotation at full speed
-    // --- reflections ← visible body regions ---
-    regionOn: 0.65,         // a region counts as present once its keypoints' presence passes this...
-    regionOff: 0.35,        // ...and stays present until it drops below this (hysteresis)
-    reflDebounceMs: 600,    // a new reflection count must hold this long before it's applied
-    reflFadeFrames: 20,     // cross-fade between the old and new reflection layouts
-    // --- z (distance) → size ---
-    baselineShoulderFrac: 0.09, // shoulder width (fraction of video width) that reads as baseline distance
-    sizeMin: 0.45, sizeMax: 2.4,
-    zSmoothing: 0.15,       // smoothing on the apparent-body-size estimate
-    // --- per-frame easing toward the pose-derived targets (higher = snappier) ---
-    ease: { pos: 0.15, size: 0.06, rings: 0.05, opacity: 0.08, speed: 0.06, angle: 0.08 }
+    stillThreshold: 0.08,   // motion below this = still → square
+    wholeBodyFrac: 0.45,    // share of visible body points moving at once that counts as whole-body → circle (fewer = localized → triangle)
+    // --- stillness vs motion → color (hue in degrees: 215 = blue, 360 = red, passing through violet) ---
+    hueStill: 215, hueMoving: 360,
+    saturation: 80, brightness: 95,
+    // --- stability: a new layout (copy count / shape) must hold this long, then cross-fades in ---
+    layoutDebounceMs: 600, layoutFadeFrames: 16,
+    ease: { rank: 0.08, crowd: 0.08, motion: 0.08 } // per-frame easing of ring positions, ring spacing and color
   }
 };
 
@@ -96,78 +68,12 @@ const KEYPOINT_NAMES = [
   'leftShoulder', 'rightShoulder', 'leftElbow', 'rightElbow', 'leftWrist', 'rightWrist',
   'leftHip', 'rightHip', 'leftKnee', 'rightKnee', 'leftAnkle', 'rightAnkle'
 ];
-
-// The six body regions from the original Energy Bodies. PoseNet has no neck/chest/abdomen
-// keypoints, so a region counts as "present" when the keypoints that define it are visible.
-const REGION_NAMES = ['head', 'neck', 'armsHands', 'chest', 'abdomen', 'legsFeet'];
-const FACE_POINTS = ['nose', 'leftEye', 'rightEye', 'leftEar', 'rightEar'];
 const TORSO_POINTS = ['leftShoulder', 'rightShoulder', 'leftHip', 'rightHip'];
-
-// Left/right pairs compared (mirrored across the body's own axis) to measure symmetry.
-const SYMMETRY_PAIRS = [
-  ['leftEye', 'rightEye'], ['leftEar', 'rightEar'],
-  ['leftShoulder', 'rightShoulder'], ['leftElbow', 'rightElbow'], ['leftWrist', 'rightWrist'],
-  ['leftHip', 'rightHip'], ['leftKnee', 'rightKnee'], ['leftAnkle', 'rightAnkle']
-];
-
-/* =============================
-   0b) SHARED SPHERE MESH + KEYPOINT→SPHERE MAPPING (built once)
-   ============================= */
-
-// 17 points spread evenly around a unit sphere (Fibonacci lattice) — an
-// arbitrary, non-anatomical assignment of keypoint → "pole" on the orb.
-function fibonacciSphere(n) {
-  const pts = [];
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-  for (let i = 0; i < n; i++) {
-    const y = n > 1 ? 1 - (i / (n - 1)) * 2 : 0;
-    const r = Math.sqrt(Math.max(0, 1 - y * y));
-    const theta = goldenAngle * i;
-    pts.push({ x: Math.cos(theta) * r, y, z: Math.sin(theta) * r });
-  }
-  return pts;
-}
-
-const KEYPOINT_POLE_DIR = {};
-(function assignPoles() {
-  const poles = fibonacciSphere(KEYPOINT_NAMES.length);
-  KEYPOINT_NAMES.forEach((name, i) => { KEYPOINT_POLE_DIR[name] = poles[i]; });
-})();
-
-// A UV-sphere grid: (rings+1) latitude rows × segments longitude columns.
-// This is what gives the visual its literal "grid mesh" look.
-let SPHERE_VERTS = [];   // [{x,y,z}] unit-sphere directions
-let SPHERE_EDGES = [];   // [[i,j], ...] indices into SPHERE_VERTS
-
-function buildSphereMesh(rings, segments) {
-  const verts = [];
-  const idx = (ring, seg) => ring * segments + (((seg % segments) + segments) % segments);
-
-  for (let ring = 0; ring <= rings; ring++) {
-    const theta = Math.PI * ring / rings; // 0 (top pole) .. PI (bottom pole)
-    const y = Math.cos(theta);
-    const ringR = Math.sin(theta);
-    for (let seg = 0; seg < segments; seg++) {
-      const phi = TWO_PI * seg / segments;
-      verts.push({ x: ringR * Math.cos(phi), y, z: ringR * Math.sin(phi) });
-    }
-  }
-
-  const edges = [];
-  for (let ring = 0; ring <= rings; ring++) {
-    for (let seg = 0; seg < segments; seg++) {
-      const i = idx(ring, seg);
-      if (ring > 0 && ring < rings) edges.push([i, idx(ring, seg + 1)]); // latitude line
-      if (ring < rings) edges.push([i, idx(ring + 1, seg)]);            // longitude line
-    }
-  }
-  return { verts, edges };
-}
 
 /* =============================
    1) RUNTIME STATE
    ============================= */
-console.log('✅ sketch.js (crowd edition — keypoint blobs) loading...');
+console.log('✅ sketch.js (crowd edition — one shared kaleidoscope) loading...');
 
 let displayOrientation = 'landscape';
 let video, poseNet, latestPoses = [];
@@ -244,13 +150,13 @@ window.onPrint = function () {
 };
 
 /* =============================
-   3) PERSON — one tracked body in the crowd
+   3) PERSON — one tracked body in the crowd (= one ring)
    ============================= */
 class Person {
   constructor(id, cx, cy) {
     this.id = id;
-    this.hue = (id * 63) % 360; // used by the Control dashboard's crowd map only — the orb itself has no color
-    this.tx = cx; this.ty = cy; // torso-weighted body center in video pixels (also used for frame-to-frame matching)
+    this.hue = (id * 63) % 360; // used by the Control dashboard's crowd map only
+    this.tx = cx; this.ty = cy; // torso-weighted body center in video pixels — used for frame-to-frame matching
     this.born = millis();
     this.lastSeen = 0;
     this.poseEvents = 0;
@@ -259,33 +165,23 @@ class Person {
     this.points = {};
     for (const name of KEYPOINT_NAMES) {
       // presence fades smoothly in/out instead of snapping with the raw PoseNet score,
-      // so a keypoint flickering near the confidence threshold doesn't pop the orb's bump on/off.
+      // so a keypoint flickering near the confidence threshold doesn't make the ring jump around.
       this.points[name] = { x: cx, y: cy, vel: 0, score: 0, presence: 0 };
     }
 
-    // Smoothed per-vertex radius multiplier for this person's orb (1 = resting sphere).
-    this.orbRadii = new Float32Array(SPHERE_VERTS.length).fill(1);
+    // Movement summary, recomputed on every pose event (see updatePersonMetrics).
+    this.m = { bodyPoints: 0, motion: 0, movingFrac: 0 };
 
-    // Kaleidoscope targets, recomputed on every pose event (see updatePersonMetrics).
-    this.bodyScale = 0;            // apparent shoulder-width-equivalent in video px — the z-distance cue
-    this.m = { sizeScale: 1, z: 1, energy: 0, rings: 0, motion: 0, speed: 0, asym: 0 };
-    this.regionOn = {};
-    for (const r of REGION_NAMES) this.regionOn[r] = false;
-    this.reflCurrent = 2; this.reflPrev = 2; this.reflTarget = 2; this.reflSince = 0; this.reflFade = 1;
+    // What this ring draws: how many copies and which shape. A change must hold for
+    // layoutDebounceMs and then cross-fades in, so detection flicker never makes the ring jump.
+    const start = { refl: 2, shape: 'square' };
+    this.layoutCur = start; this.layoutPrev = start; this.layoutPending = start;
+    this.pendingSince = 0;
+    this.layoutFade = 1;
 
-    // Values actually drawn — eased toward the targets every frame so nothing jumps at pose-event rate.
-    this.d = { x: cx, y: cy, size: 1, rings: 0, opacity: TUNE.kaleido.opacityStill, speed: 0, angle: 0 };
+    // Values actually drawn, eased toward their targets every frame.
+    this.d = { rank: 1, motion: 0 };
     this.dInit = false;
-    this.spin = 0;                 // integrated orb spin (rad) — integrating means a speed change never causes a jump
-    this.ringPhase = 0;            // integrated kaleidoscope rotation (rad)
-
-    // Offscreen buffer holding this person's orb, rendered once per frame and stamped for every reflection.
-    this.gfx = null;
-    this.bufPx = 0;
-  }
-
-  destroy() {
-    if (this.gfx) { this.gfx.remove(); this.gfx = null; }
   }
 }
 
@@ -373,7 +269,6 @@ function matchPeopleToPoses(poses, now) {
   // Drop anyone we haven't seen in a while (genuinely gone — occluded too long, or left frame).
   for (const [id, person] of people) {
     if (now - person.lastSeen > TUNE.tracking.personTimeoutMs) {
-      person.destroy();
       people.delete(id);
     }
   }
@@ -421,16 +316,16 @@ function updatePersonPoints(person, pose, now) {
 }
 
 /* =============================
-   5b) BODY → KALEIDOSCOPE TARGETS (per pose event)
+   5b) BODY → RING TARGETS (per pose event)
    ============================= */
 const vNorm = v => clamp01(map(v, TUNE.point.velNormMin, TUNE.point.velNormMax, 0, 1));
+const evenUp = n => 2 * Math.ceil(n / 2);
 
 function updatePersonMetrics(person, now) {
   const K = TUNE.kaleido, P = person.points, m = person.m;
-  const vis = n => P[n].presence > 0.5;
 
-  // x, y — weighted by presence so a hip or shoulder fading in/out glides the center instead of jumping it,
-  // and anchored on the torso so raising an arm doesn't drag the whole kaleidoscope sideways.
+  // Torso-weighted center, used only to match this person to the next frame's skeletons. Weighted by
+  // presence so a hip or shoulder fading in/out glides the center rather than jumping it.
   let wx = 0, wy = 0, ws = 0;
   for (const n of TORSO_POINTS) { wx += P[n].x * P[n].presence; wy += P[n].y * P[n].presence; ws += P[n].presence; }
   if (ws < 0.5) {
@@ -439,115 +334,45 @@ function updatePersonMetrics(person, now) {
   }
   if (ws > 0.01) { person.tx = wx / ws; person.ty = wy / ws; }
 
-  // z — PoseNet has no depth, so use apparent body size: shoulder width, or torso length when hips are
-  // visible too (torso is less affected by the person turning sideways). Bigger in frame = closer.
-  let est = 0;
-  const shouldersVis = vis('leftShoulder') && vis('rightShoulder');
-  const torsoVis = shouldersVis && vis('leftHip') && vis('rightHip');
-  if (shouldersVis) est = Math.hypot(P.leftShoulder.x - P.rightShoulder.x, P.leftShoulder.y - P.rightShoulder.y);
-  if (torsoVis) {
-    const sx = (P.leftShoulder.x + P.rightShoulder.x) / 2, sy = (P.leftShoulder.y + P.rightShoulder.y) / 2;
-    const hx = (P.leftHip.x + P.rightHip.x) / 2, hy = (P.leftHip.y + P.rightHip.y) / 2;
-    est = Math.max(est, Math.hypot(hx - sx, hy - sy) / 1.25); // torso ≈ 1.25 shoulder-widths
-  }
-  if (est > 1) person.bodyScale = person.bodyScale ? lerp(person.bodyScale, est, K.zSmoothing) : est;
-  if (person.bodyScale) {
-    const baseline = (video?.width || 960) * K.baselineShoulderFrac;
-    m.sizeScale = constrain(person.bodyScale / baseline, K.sizeMin, K.sizeMax);
-    m.z = baseline / person.bodyScale; // relative distance from the screen: 1 = baseline, >1 = farther
-  }
-
-  // Movement: energy is the TOTAL across the body (more parts moving = more), motion is the body-wide
-  // average (still vs. moving, independent of how many keypoints are visible), and speed is how fast the
-  // parts that ARE moving are going (so one fast-waving hand still reads as fast).
-  let energy = 0, sum = 0, n = 0, movingSum = 0, movingN = 0;
+  // Movement: how many body points are tracked, how much the body is moving overall (still vs. moving),
+  // and how much of it is moving at once (a waving hand vs. a dancing body).
+  let visible = 0, sum = 0, movingN = 0;
   for (const name of KEYPOINT_NAMES) {
-    if (!vis(name)) continue;
+    if (P[name].presence <= 0.5) continue;
     const v = vNorm(P[name].vel);
-    energy += v; sum += v; n++;
-    if (v > 0.03) { movingSum += v; movingN++; }
+    visible++; sum += v;
+    if (v > 0.03) movingN++;
   }
-  m.energy = energy;
-  m.rings = constrain(energy * K.energyToRings, 0, K.maxRings);
-  m.motion = n ? clamp01((sum / n) / K.motionFullMean) : 0;
-  m.speed = movingN ? movingSum / movingN : 0;
+  m.bodyPoints = visible;
+  m.motion = visible ? clamp01((sum / visible) / K.motionFullMean) : 0;
+  m.movingFrac = visible ? movingN / visible : 0;
 
-  // Symmetry → angle. If the body can't be measured this frame, relax slowly toward "symmetric".
-  const asym = computeAsymmetry(person);
-  m.asym = asym === null ? lerp(m.asym, 0, 0.03) : lerp(m.asym, asym, 0.1);
-
-  // Reflections ← body regions present, mirrored left/right (so always even = true mirror symmetry).
-  const pr = n => P[n].presence;
-  const head = Math.max(...FACE_POINTS.map(pr));
-  const shoulders = (pr('leftShoulder') + pr('rightShoulder')) / 2;
-  const hips = (pr('leftHip') + pr('rightHip')) / 2;
-  const scores = {
-    head,
-    neck: Math.min(head, shoulders),
-    chest: shoulders,
-    armsHands: Math.max(pr('leftElbow'), pr('rightElbow'), pr('leftWrist'), pr('rightWrist')),
-    abdomen: hips,
-    legsFeet: Math.max(pr('leftKnee'), pr('rightKnee'), pr('leftAnkle'), pr('rightAnkle'))
-  };
-  let count = 0;
-  for (const r of REGION_NAMES) {
-    if (person.regionOn[r] ? scores[r] < K.regionOff : scores[r] > K.regionOn) person.regionOn[r] = !person.regionOn[r];
-    if (person.regionOn[r]) count++;
-  }
-  commitReflections(person, Math.max(2, count * 2), now);
+  const refl = K.reflectionsFrom === 'people' ? Math.max(2, evenUp(people.size)) : Math.max(2, evenUp(visible));
+  commitLayout(person, { refl, shape: classifyShape(m) }, now);
 }
 
-// A change in region count only takes effect once it has held for reflDebounceMs, then cross-fades in —
-// a keypoint flickering at the edge of visibility must not make the whole layout jump around.
-function commitReflections(person, target, now) {
+// Shape from movement: still → square (grounded), a few body parts moving → triangle (pointed, directed),
+// most of the body moving → circle (flowing).
+function classifyShape(m) {
+  const K = TUNE.kaleido;
+  if (m.motion < K.stillThreshold) return 'square';
+  return m.movingFrac >= K.wholeBodyFrac ? 'circle' : 'triangle';
+}
+
+function commitLayout(person, target, now) {
+  const same = (a, b) => a.refl === b.refl && a.shape === b.shape;
   if (person.poseEvents < 5) { // presence is still ramping up on a brand-new person; settle silently
-    person.reflCurrent = person.reflPrev = person.reflTarget = target;
+    person.layoutCur = person.layoutPrev = person.layoutPending = target;
     return;
   }
-  if (target !== person.reflTarget) {
-    person.reflTarget = target;
-    person.reflSince = now;
-  } else if (target !== person.reflCurrent && now - person.reflSince >= TUNE.kaleido.reflDebounceMs) {
-    person.reflPrev = person.reflCurrent;
-    person.reflCurrent = target;
-    person.reflFade = 0;
+  if (!same(target, person.layoutPending)) {
+    person.layoutPending = target;
+    person.pendingSince = now;
+  } else if (!same(target, person.layoutCur) && now - person.pendingSince >= TUNE.kaleido.layoutDebounceMs) {
+    person.layoutPrev = person.layoutCur;
+    person.layoutCur = target;
+    person.layoutFade = 0;
   }
-}
-
-// 0 = the left and right sides mirror each other perfectly; 1 = strongly asymmetric. Each left joint is
-// reflected across the body's own axis (through the shoulders, along the spine when the hips are visible)
-// and compared to its right counterpart, so leaning or turning alone doesn't count as asymmetry but
-// one arm raised, or one shoulder dropped, does. Returns null if too little of the body is visible.
-function computeAsymmetry(person) {
-  const K = TUNE.kaleido, P = person.points;
-  if (!person.bodyScale) return null;
-  const vis = n => P[n].presence > 0.6;
-  const mid = (a, b) => ({ x: (P[a].x + P[b].x) / 2, y: (P[a].y + P[b].y) / 2 });
-
-  let origin = null;
-  if (vis('leftShoulder') && vis('rightShoulder')) origin = mid('leftShoulder', 'rightShoulder');
-  else if (vis('leftHip') && vis('rightHip')) origin = mid('leftHip', 'rightHip');
-  else if (vis('leftEye') && vis('rightEye')) origin = mid('leftEye', 'rightEye');
-  if (!origin) return null;
-
-  let ax = 0, ay = 1; // default axis: straight up/down in the image
-  if (vis('leftShoulder') && vis('rightShoulder') && vis('leftHip') && vis('rightHip')) {
-    const s = mid('leftShoulder', 'rightShoulder'), h = mid('leftHip', 'rightHip');
-    const len = Math.hypot(h.x - s.x, h.y - s.y);
-    if (len > 1e-3) { ax = (h.x - s.x) / len; ay = (h.y - s.y) / len; }
-  }
-
-  let sum = 0, n = 0;
-  for (const [l, r] of SYMMETRY_PAIRS) {
-    if (!vis(l) || !vis(r)) continue;
-    const along = (P[l].x - origin.x) * ax + (P[l].y - origin.y) * ay;
-    const mirroredX = 2 * (origin.x + ax * along) - P[l].x;
-    const mirroredY = 2 * (origin.y + ay * along) - P[l].y;
-    sum += Math.hypot(mirroredX - P[r].x, mirroredY - P[r].y) / person.bodyScale;
-    n++;
-  }
-  if (n < 2) return null;
-  return clamp01((sum / n - K.symDeadzone) / (K.symFull - K.symDeadzone));
 }
 
 /* =============================
@@ -557,10 +382,6 @@ function setup() {
   createCanvas(windowWidth, windowHeight);
   pixelDensity(1);
   angleMode(RADIANS);
-
-  const built = buildSphereMesh(TUNE.orb.rings, TUNE.orb.segments);
-  SPHERE_VERTS = built.verts;
-  SPHERE_EDGES = built.edges;
 
   window.__ebSession = new SessionAverager();
 
@@ -611,28 +432,7 @@ function draw() {
   text(`[${displayOrientation}]`, 12, 60);
 
   if (!trackingStarted) return;
-
-  const vw = video?.width || 960, vh = video?.height || 540;
-  let s, ox, oy;
-  push();
-  if (displayOrientation === 'portrait') {
-    translate(0, height);
-    rotate(-HALF_PI);
-    s = Math.min(height / vw, width / vh);
-    ox = (height - vw * s) / 2;
-    oy = (width - vh * s) / 2;
-  } else {
-    s = Math.min(width / vw, height / vh);
-    ox = (width - vw * s) / 2;
-    oy = (height - vh * s) / 2;
-  }
-
-  const now = millis();
-  for (const person of people.values()) {
-    easeDisplayState(person);
-    drawPersonKaleidoscope(person, ox + person.d.x * s, oy + person.d.y * s, now);
-  }
-  pop();
+  drawCrowdKaleidoscope(millis());
 }
 
 function windowResized() {
@@ -640,31 +440,9 @@ function windowResized() {
 }
 
 /* =============================
-   7) DRAWING — a kaleidoscope of orbs, per person
+   7) DRAWING — one kaleidoscope for the whole room
    ============================= */
-
-// Pose events arrive at PoseNet's (variable) frame rate; ease the drawn values toward the targets every
-// render frame so the kaleidoscope glides instead of stepping.
-function easeDisplayState(person) {
-  const K = TUNE.kaleido, E = K.ease, d = person.d, m = person.m;
-  const motion = K.invertOpacity ? 1 - m.motion : m.motion;
-  const targets = {
-    x: person.tx, y: person.ty,
-    size: m.sizeScale,
-    rings: m.rings,
-    opacity: lerp(K.opacityStill, K.opacityMoving, motion),
-    speed: m.speed,
-    angle: m.asym * K.angleMax
-  };
-  if (!person.dInit) { Object.assign(d, targets); person.dInit = true; return; }
-  d.x = lerp(d.x, targets.x, E.pos);
-  d.y = lerp(d.y, targets.y, E.pos);
-  d.size = lerp(d.size, targets.size, E.size);
-  d.rings = lerp(d.rings, targets.rings, E.rings);
-  d.opacity = lerp(d.opacity, targets.opacity, E.opacity);
-  d.speed = lerp(d.speed, targets.speed, E.speed);
-  d.angle = lerp(d.angle, targets.angle, E.angle);
-}
+let crowdD = 1, crowdInit = false; // eased number of people, so rings glide apart/together when someone joins or leaves
 
 // Fade a person in when first detected and out as they go missing, rather than popping.
 function lifeAlpha(person, now) {
@@ -675,135 +453,74 @@ function lifeAlpha(person, now) {
   return fadeIn * fadeOut;
 }
 
-// How much this person's tracked keypoints currently bulge the sphere at unit direction `dir`.
-function orbBumpAt(person, dir) {
-  const O = TUNE.orb;
-  let bump = 0;
-  for (const name of KEYPOINT_NAMES) {
-    const p = person.points[name];
-    if (p.presence <= 0.01) continue;
-    const v = vNorm(p.vel);
-    if (v <= 0) continue;
-    const pole = KEYPOINT_POLE_DIR[name];
-    const cosAngle = constrain(dir.x * pole.x + dir.y * pole.y + dir.z * pole.z, -1, 1);
-    const angle = Math.acos(cosAngle);
-    bump += v * p.presence * Math.exp(-(angle * angle) / (2 * O.bumpSigma * O.bumpSigma));
-  }
-  return bump;
+// Largest a shape may be on a ring of radius r with `copies` copies and `spacing` between rings:
+// small enough that neighboring rings and neighboring copies only just touch.
+function shapeHalfSize(r, copies, spacing) {
+  const K = TUNE.kaleido;
+  return Math.min(K.ringFill * spacing, K.arcFill * Math.PI * r / copies);
 }
 
-// The orb is drawn once per frame into a per-person offscreen buffer, then stamped for the base form and
-// every reflection. Drawing hundreds of vertices once and blitting the result N times is what keeps a
-// kaleidoscope of dozens of copies per person affordable.
-function ensureBuffer(person, needPx) {
-  if (person.gfx && needPx <= person.bufPx && needPx >= person.bufPx * 0.6) return;
-  if (person.gfx) person.gfx.remove();
-  person.bufPx = Math.ceil((needPx * 1.15) / 32) * 32;
-  person.gfx = createGraphics(person.bufPx, person.bufPx);
+function drawShape(kind, s) {
+  if (kind === 'circle') circle(0, 0, s * 2);
+  else if (kind === 'square') { rectMode(CENTER); square(0, 0, s * 1.7); }
+  else triangle(s, 0, -s / 2, s * 0.866, -s / 2, -s * 0.866); // equilateral, pointing outward
 }
 
-function renderOrbToBuffer(person, R, spin) {
-  const O = TUNE.orb;
-  ensureBuffer(person, 2 * R * O.maxRadiusMult + 8);
-  const g = person.gfx, c = person.bufPx / 2;
-  g.clear();
-
-  const cosA = Math.cos(spin), sinA = Math.sin(spin);
-  const tilt = -0.32;
-  const cosT = Math.cos(tilt), sinT = Math.sin(tilt);
-
-  const projected = new Array(SPHERE_VERTS.length);
-  for (let i = 0; i < SPHERE_VERTS.length; i++) {
-    const dir = SPHERE_VERTS[i];
-    const target = 1 + O.bumpScale * orbBumpAt(person, dir);
-    person.orbRadii[i] = lerp(person.orbRadii[i], constrain(target, O.minRadiusMult, O.maxRadiusMult), O.bumpSmoothing);
-    const r = person.orbRadii[i];
-
-    // Rotate around Y, then tilt around X.
-    const x = dir.x * r, y0 = dir.y * r, z0 = dir.z * r;
-    const rx = x * cosA + z0 * sinA;
-    const rz1 = -x * sinA + z0 * cosA;
-    const ry = y0 * cosT - rz1 * sinT;
-    const rz = y0 * sinT + rz1 * cosT;
-
-    projected[i] = {
-      x: c + rx * R,
-      y: c + ry * R,
-      depth: (rz + O.maxRadiusMult) / (2 * O.maxRadiusMult) // roughly 0 (back) .. 1 (front)
-    };
-  }
-
-  // Line/dot weights scale with the orb so it reads the same tiny (far away) or huge (up close).
-  g.strokeWeight(constrain(R * 0.014, 0.8, 1.8));
-  for (const [a, b] of SPHERE_EDGES) {
-    const pa = projected[a], pb = projected[b];
-    g.stroke(255, 255 * lerp(O.lineAlphaBase, O.lineAlphaBoost, (pa.depth + pb.depth) / 2));
-    g.line(pa.x, pa.y, pb.x, pb.y);
-  }
-
-  g.noStroke();
-  for (const p of projected) {
-    g.fill(255, 255 * lerp(O.dotAlphaBase, O.dotAlphaBoost, p.depth));
-    g.circle(p.x, p.y, constrain(R * 0.035 + p.depth * R * 0.03, 1.2, 5));
+// One ring: `copies` shapes around the center, every other copy mirrored (so with an even count the ring is
+// mirror-symmetric), every other ring offset half a segment — the moonflower layout. Copy 0 sits at 12 o'clock.
+function drawRing(r, ringIndex, spacing, layout, hueDeg, alpha) {
+  if (alpha <= 0.002) return;
+  const K = TUNE.kaleido;
+  const copies = layout.refl, seg = TWO_PI / copies;
+  const s = shapeHalfSize(r, copies, spacing);
+  if (s < 0.5) return;
+  const weave = ringIndex % 2 === 1 ? seg / 2 : 0;
+  fill(hueDeg, K.saturation, K.brightness, alpha);
+  for (let i = 0; i < copies; i++) {
+    push();
+    rotate(-HALF_PI + i * seg + weave);
+    translate(r, 0);
+    if (i % 2 === 1) scale(-1, 1);
+    drawShape(layout.shape, s);
+    pop();
   }
 }
 
-// One kaleidoscope layout — a direct port of the moonflower draw loop: rings of `reflections` copies, every
-// other ring offset half a segment (the "woven" look), every other copy mirrored, each then rotated in
-// place by `angle`. A fractional ring count fades the outermost ring in instead of popping it.
-function drawRingLayout(person, reflections, spacing, ringsFloat, angle, alpha) {
-  if (alpha <= 0.002 || reflections < 2) return;
-  const half = person.bufPx / 2;
-  const seg = TWO_PI / reflections;
-  const full = Math.floor(ringsFloat), frac = ringsFloat - full;
-  const count = frac > 0.01 ? full + 1 : full;
+function drawCrowdKaleidoscope(now) {
+  const K = TUNE.kaleido, E = K.ease;
+  const list = Array.from(people.values()).sort((a, b) => a.id - b.id); // first person = innermost ring
+  if (!list.length) return;
 
-  for (let r = 0; r < count; r++) {
-    const ringAlpha = r < full ? 1 : frac;
-    const weave = r % 2 === 1 ? seg / 2 : 0;
-    for (let i = 0; i < reflections; i++) {
-      push();
-      rotate(i * seg + weave + person.ringPhase);
-      translate(spacing * (r + 1), 0);
-      if (i % 2 === 1) scale(-1, 1);
-      rotate(angle);
-      drawingContext.globalAlpha = alpha * ringAlpha;
-      image(person.gfx, -half, -half);
-      pop();
-    }
-  }
-}
+  crowdD = crowdInit ? lerp(crowdD, list.length, E.crowd) : list.length;
+  crowdInit = true;
+  const N = Math.max(1, crowdD);
 
-function drawPersonKaleidoscope(person, cx, cy, now) {
-  const K = TUNE.kaleido, d = person.d;
+  list.forEach((p, i) => {
+    if (!p.dInit) { p.d.rank = i + 1; p.d.motion = p.m.motion; p.dInit = true; return; }
+    p.d.rank = lerp(p.d.rank, i + 1, E.rank);
+    p.d.motion = lerp(p.d.motion, p.m.motion, E.motion);
+  });
 
-  // Speed drives the rotation *rate*; integrating it (rather than multiplying by frameCount) means the
-  // rate can change smoothly without the pattern ever jumping.
-  person.spin += K.idleSpin + d.speed * K.spinGain;
-  person.ringPhase += K.idleRingSpin + d.speed * K.ringSpinGain;
-
-  const R = height * K.baseRadiusFrac * d.size;
-  renderOrbToBuffer(person, R, person.spin + person.id * 0.7);
-
-  const alpha = d.opacity * lifeAlpha(person, now);
-  const half = person.bufPx / 2;
-  const spacing = R * K.ringSpacing;
-  const rings = constrain(d.rings, 0, K.maxRings);
+  // Size the whole thing so the outermost shapes touch the left and right edges of the screen.
+  const halfW = width / 2;
+  const outerCopies = list[list.length - 1].layoutCur.refl;
+  let L = halfW * 0.9;
+  for (let it = 0; it < 3; it++) L = halfW - shapeHalfSize(L, outerCopies, L / N);
+  const spacing = L / N;
 
   push();
-  translate(cx, cy);
-
-  // The base form: the person's own orb, at their position, sized by their distance.
-  push();
-  rotate(d.angle);
-  drawingContext.globalAlpha = alpha;
-  image(person.gfx, -half, -half);
-  pop();
-
-  // Reflections. When the region count changes, cross-fade from the old layout to the new one.
-  if (person.reflFade < 1) person.reflFade = Math.min(1, person.reflFade + 1 / K.reflFadeFrames);
-  if (person.reflFade < 1) drawRingLayout(person, person.reflPrev, spacing, rings, d.angle, alpha * (1 - person.reflFade));
-  drawRingLayout(person, person.reflCurrent, spacing, rings, d.angle, alpha * person.reflFade);
+  translate(width / 2, height / 2);
+  colorMode(HSB, 360, 100, 100, 1);
+  noStroke();
+  for (let i = list.length - 1; i >= 0; i--) { // outermost first, so inner rings sit on top
+    const p = list[i];
+    const r = L * p.d.rank / N;
+    const hueDeg = lerp(K.hueStill, K.hueMoving, p.d.motion);
+    const alpha = K.opacity * lifeAlpha(p, now);
+    if (p.layoutFade < 1) p.layoutFade = Math.min(1, p.layoutFade + 1 / K.layoutFadeFrames);
+    if (p.layoutFade < 1) drawRing(r, i, spacing, p.layoutPrev, hueDeg, alpha * (1 - p.layoutFade));
+    drawRing(r, i, spacing, p.layoutCur, hueDeg, alpha * p.layoutFade);
+  }
   pop();
 }
 
@@ -837,9 +554,9 @@ window.__ebPrintImpl = onPrintAverageThenSnapshot;
 
 function resetAll() {
   try { stopTrackingImpl(); } catch (e) { }
-  for (const person of people.values()) person.destroy();
   people.clear();
   nextPersonId = 1;
+  crowdInit = false;
   latestPoses = [];
   if (window.EnergyBodiesDisplay) {
     try { EnergyBodiesDisplay.tracking(false); } catch (e) { }
