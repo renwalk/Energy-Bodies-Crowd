@@ -78,8 +78,8 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - `TUNE.point.posSmoothing` — how snappy vs. smoothed each tracked keypoint is relative to the raw detection.
   Higher = more responsive, but jitterier.
 - `TUNE.point.velNormMax` — the keypoint speed (normalized per-frame, relative to the video's diagonal) that
-  reads as "fully activated." Lower this if the orb isn't bulging enough; raise it if it looks maxed out from
-  small movements.
+  reads as "fully activated." Lower this if people barely register as moving (everything stays blue squares);
+  raise it if small movements already read as fully in motion.
 - `TUNE.kaleido.reflectionsFrom` — `'bodyPoints'` (default): each ring's copy count comes from that person's
   tracked body points. `'people'`: every ring gets one copy per person detected instead.
 - `TUNE.kaleido.stillThreshold` / `wholeBodyFrac` — where "still" ends (square) and how much of the body has to be
