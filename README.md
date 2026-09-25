@@ -11,25 +11,28 @@ once** and gives each person their own simple blob, instead of following a singl
   skeleton a stable id across frames — PoseNet itself has no concept of identity, so this is what keeps one
   person's blob from swapping with someone else's as poses shuffle order frame to frame. A tracked person who
   isn't matched to a skeleton for `personTimeoutMs` (default 1s) is dropped.
-- **One image for the whole room, and no emotion mapping.** Instead of a visual per person, the display shows a
-  single kaleidoscope (layout ported from the moonflower sketch) centered on the screen and spanning its full
-  width. **Each person is one ring** — the first person detected is the innermost ring and every additional
-  person adds a ring outward. Rings re-space themselves as people come and go, so the outermost always reaches
-  the screen edges. Nothing rotates.
+- **One mirrored image for the whole room, and no emotion mapping.** A vertical mirror line runs down the middle
+  of the screen. Everything is drawn on one side and reflected onto the other — as one exact mirror image — and the
+  whole image always fits inside the screen. **Each person is a column** of shapes stacked down the screen: the
+  first person detected is the column against the mirror line, and every additional person adds a column further
+  out. The columns re-space as people come and go. Nothing rotates.
 
-  | Kaleidoscope property | Driven by |
+  | Property | Driven by |
   |---|---|
-  | **Rings** | One per person detected |
-  | **Reflections** (copies around a ring) | That person's number of tracked body points (of PoseNet's 17), rounded up to an even number so the mirrored copies close up — a full body gives 18, an upper body 12 |
-  | **Shape** | That person's movement: **square** = still, **triangle** = a few body parts moving (a waving hand), **circle** = most of the body moving |
+  | **Columns** | One per person detected |
+  | **Shapes in a column** | That person's number of tracked body points (of PoseNet's 17), rounded up to an even number and split across the two sides — a full body is 9 per side, an upper body 6 |
+  | **Form** | That person's movement: a **boxy bowl** with nested boxes = still, a **pointed wedge** = a few body parts moving (a waving hand), a **round loop with a spiral** = most of the body moving |
   | **Color** | Stillness vs. motion: blue when still, through violet, to red when moving |
 
-  Every other copy on a ring is mirrored and every other ring is offset half a segment, as in moonflower. A
-  change to a ring's copy count or shape must hold for over a second and then cross-fades in slowly, so detection
-  flicker never makes the image jump. Shapes are translucent and sized so neighbors overlap. Movement is tuned to
-  be calm: rings, spacing, and color glide with a critically damped spring (starts gently, no lurch, no overshoot),
-  and the movement reading itself is quick to notice motion but slow to let go. People fade in and out rather than
-  popping.
+  The forms are organic rather than geometric, in the spirit of oil-pastel sketches: wobbly outlines, smaller loops
+  nested inside (or a spiral), and a random lean and tilt to each, with a soft translucent fill so overlapping shapes
+  show through each other. Each form is generated once from a seed (so it never shimmers) and cached, then rescaled
+  to fill its cell exactly, which is what guarantees nothing can poke off the screen.
+
+  Movement is tuned to be calm: columns, spacing and color glide with a critically damped spring (starts gently, no
+  lurch, no overshoot), and the movement reading is quick to notice motion but slow to let go. A change to a
+  column's shape count or form must hold for over a second and then cross-fades in slowly, so detection flicker
+  never makes the image jump. People fade in and out rather than popping.
 - **No manual sliders, no emotion/region dashboard.** The single-person project let a facilitator hand-tune one
   participant's emotion/region values from an iPad. There's no equivalent concept here — `control.html` is a
   read-only dashboard: live headcount, average crowd movement, and a simple "crowd map" showing one dot per
@@ -83,17 +86,20 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - `TUNE.point.velNormMax` — the keypoint speed (normalized per-frame, relative to the video's diagonal) that
   reads as "fully activated." Lower this if people barely register as moving (everything stays blue squares);
   raise it if small movements already read as fully in motion.
-- `TUNE.kaleido.reflectionsFrom` — `'bodyPoints'` (default): each ring's copy count comes from that person's
-  tracked body points. `'people'`: every ring gets one copy per person detected instead.
-- `TUNE.kaleido.stillThreshold` / `wholeBodyFrac` — where "still" ends (square) and how much of the body has to be
-  moving at once to count as whole-body (circle) rather than localized (triangle).
+- `TUNE.kaleido.reflectionsFrom` — `'bodyPoints'` (default): the number of shapes in a column comes from that
+  person's tracked body points. `'people'`: one per person detected instead.
+- `TUNE.kaleido.stillThreshold` / `wholeBodyFrac` — where "still" ends (bowl) and how much of the body has to be
+  moving at once to count as whole-body (round loop) rather than localized (wedge).
 - `TUNE.kaleido.motionFullMean` — how much movement reads as fully "in motion" (fully red).
 - `TUNE.kaleido.hueStill` / `hueMoving` / `saturation` / `brightness` / `opacity` — the color range and look.
-- `TUNE.kaleido.ringFill` / `arcFill` — how large the shapes get relative to the gap between rings / between
-  neighbors on a ring (0.5 / 1.0 = they just touch; the defaults are higher so shapes overlap). Together with
-  `opacity` (lower = more see-through, but murkier color on black) this sets how much overlap you see.
-- `TUNE.kaleido.smooth` — **the main calm/lively dial.** Roughly how many seconds a ring, the ring spacing, the
-  color, and the overall fit take to glide to a new value. Bigger = slower and calmer.
+- `TUNE.kaleido.overlap` — how much bigger each shape is than its cell (1.0 = neighbors just touch; higher = more
+  overlap). Together with `opacity` (lower = more see-through, but murkier color on black) this sets how much
+  overlap you see.
+- `TUNE.kaleido.maxBandFrac` — how wide a shape may get, as a fraction of the screen height. It keeps shapes from
+  stretching into flat ovals when only a few people are present; with many people the columns simply share the
+  width. `margin` is the empty border around the image.
+- `TUNE.kaleido.smooth` — **the main calm/lively dial.** Roughly how many seconds a column, the spacing between
+  columns, the color, and the overall fit take to glide to a new value. Bigger = slower and calmer.
 - `TUNE.kaleido.motionAttack` / `motionRelease` — how quickly the movement reading rises when someone starts moving
   and falls when they stop. Lower release = color and shape linger longer before settling back.
 - `TUNE.kaleido.layoutDebounceMs` / `layoutFadeFrames` / `fadeInMs` — how long a new copy count or shape must hold,
@@ -104,12 +110,16 @@ an actual crowd on the venue's camera and hardware.
 
 ## Where this could go next
 
-- Decide what each shape should mean — the shape/movement mapping lives in one function (`classifyShape`).
-- Use a person's position or distance from the camera (both are tracked) to place or size their ring.
-- Add motion back in (rotation driven by velocity, for example).
+- Two-tone: the sketches often use a different color on each side of the mirror — e.g. still on one side, moving on
+  the other.
+- More kinds of form (ears, lips, bowls, zigzags like in the sketches) chosen from richer movement measures than
+  still / some / most of the body — the mapping lives in one function (`classifyShape`).
+- Use a person's position or distance from the camera (both are tracked) to place or size their column.
+- Add motion back in (a slow drift or breathing in the strokes, for example).
 
-The previous version — one kaleidoscope of 3D wireframe orbs per person — is preserved under the git tag
-`v4-kaleidoscope-orbs`.
+The earlier versions are on other branches and tags: `multiple` holds a kaleidoscope of 3D orbs per person, and the
+tag `v4-kaleidoscope-orbs` marks its final state. The circular, one-ring-per-person kaleidoscope that preceded this
+mirrored layout is in this branch's git history (commit `0c2c806`).
 
 ---
 

@@ -1,19 +1,21 @@
 /* ============================================================================
-   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v5: one shared kaleidoscope)
-   One image for the whole room instead of one per person:
+   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v6: one mirrored image)
+   One image for the whole room. A vertical mirror line runs down the middle of
+   the screen; everything is drawn on one side and reflected onto the other,
+   and the whole image always fits inside the screen.
      - PoseNet runs in 'multiple' detection mode and a lightweight nearest-neighbor
        tracker gives each person a stable id across frames
-     - The kaleidoscope is centered on the screen and spans its full width
-     - Each person is one RING: the first person is the innermost ring and every
-       additional person adds a ring outward. The rings re-space themselves so
-       the outermost one always reaches the screen edges.
-     - A ring's copies (its reflections) = that person's number of tracked body
-       points, rounded up to an even number so the mirrored copies close up
-     - The shape on a ring — circle, triangle or square — comes from that
-       person's movement: still = square, a few body parts moving = triangle,
-       whole-body movement = circle
+     - Each person is one COLUMN of shapes stacked down the screen. The first
+       person hugs the mirror line and every additional person adds a column
+       further out; the columns re-space so they always fit.
+     - A column holds that person's number of tracked body points (rounded up to
+       an even number), split across the two sides — a full body is 9 per side
+     - The shapes are organic forms (wobbly outlines, nested inner loops or a
+       spiral, each leaning a little differently). Which form comes from that
+       person's movement: still = boxy bowl, a few body parts moving = pointed
+       wedge, whole-body movement = round loop with a spiral
      - Stillness vs motion sets the color: blue (still) → violet → red (moving)
-     - Nothing rotates
+     - Nothing rotates; changes glide in slowly
    IMPORTANT: Load eb-init.js BEFORE this file!
    ============================================================================ */
 
@@ -42,17 +44,18 @@ const TUNE = {
     presenceOutRate: 0.12 // how fast a keypoint fades OUT when lost — slow, so a borderline/flickering detection doesn't pop on and off
   },
   kaleido: {
-    // --- layout: one kaleidoscope, centered on screen, outermost ring reaching the screen edges ---
-    ringFill: 1.0,          // max shape half-size relative to the gap between rings (0.5 = neighboring rings just touch, higher = overlap)
-    arcFill: 1.5,           // max shape half-size relative to half the gap between neighbors on a ring (1.0 = they just touch, higher = overlap)
+    // --- layout: a vertical mirror line down the middle of the screen ---
+    overlap: 1.25,          // shapes are this much bigger than the cell they sit in, so neighbors overlap (1.0 = just touch)
+    maxBandFrac: 0.15,      // widest a shape may get, as a fraction of the screen height — keeps them from stretching into flat ovals when few people are present
+    margin: 0.03,           // empty border around the image, as a fraction of the screen
     opacity: 0.5,           // translucent, so overlapping shapes show through each other (lower = more see-through, but murkier color on black)
-    // --- reflections (copies around each ring) ---
-    reflectionsFrom: 'bodyPoints', // 'bodyPoints': each ring gets that person's number of tracked body points
-                                   // 'people':     every ring gets one copy per person detected
-    // --- movement → shape ---
+    // --- how many shapes are in a person's column (across both sides of the mirror) ---
+    reflectionsFrom: 'bodyPoints', // 'bodyPoints': that person's number of tracked body points, rounded up to even
+                                   // 'people':     one per person detected instead
+    // --- movement → which organic form ---
     motionFullMean: 0.3,    // mean keypoint activation that reads as "fully in motion"
-    stillThreshold: 0.08,   // motion below this = still → square
-    wholeBodyFrac: 0.45,    // share of visible body points moving at once that counts as whole-body → circle (fewer = localized → triangle)
+    stillThreshold: 0.08,   // motion below this = still → boxy bowl
+    wholeBodyFrac: 0.45,    // share of visible body points moving at once that counts as whole-body → round loop (fewer = localized → pointed wedge)
     // --- stillness vs motion → color (hue in degrees: 215 = blue, 360 = red, passing through violet) ---
     hueStill: 215, hueMoving: 360,
     saturation: 80, brightness: 95,
@@ -63,7 +66,7 @@ const TUNE = {
     layoutFadeFrames: 50,   // ...and then cross-fades in over this many frames
     fadeInMs: 1200,         // how slowly a newly detected person fades in
     // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer:
-    // a ring moving to a new position, the spacing between rings, the color, and the overall fit to the screen width
+    // a column moving to a new position, the spacing between columns, the color, and the overall fit to the screen
     smooth: { rank: 1.4, crowd: 1.4, motion: 1.6, fit: 1.2 }
   }
 };
@@ -297,6 +300,10 @@ function updatePersonPoints(person, pose, now) {
     const pt = person.points[name];
 
     if (k && k.score > P.kpMinScore) {
+      // A keypoint that's new (or has been missing for a while) has no meaningful "previous position": it starts
+      // at the person's center, or wherever it was last seen. Measuring velocity from there would read the jump to
+      // its real position as violent movement — a still person would look like they were thrashing for seconds.
+      if (pt.presence < 0.15) { pt.x = k.position.x; pt.y = k.position.y; }
       const dx = (k.position.x - pt.x) / diag;
       const dy = (k.position.y - pt.y) / diag;
       const rawVel = Math.max(0, Math.hypot(dx, dy) - P.velDeadzone); // absorb baseline detection jitter before it ever reaches the smoothing
@@ -442,7 +449,7 @@ function draw() {
   text(`[${displayOrientation}]`, 12, 60);
 
   if (!trackingStarted) return;
-  drawCrowdKaleidoscope(millis());
+  drawCrowdMirror(millis());
 }
 
 function windowResized() {
@@ -450,8 +457,9 @@ function windowResized() {
 }
 
 /* =============================
-   7) DRAWING — one kaleidoscope for the whole room
+   7) DRAWING — one mirrored image for the whole room
    ============================= */
+
 // A critically damped spring ("smooth damp"). Unlike lerp-toward-target every frame — which is fastest at the very
 // start, so anything that changes lurches into motion — this starts from a standstill, accelerates gently, then
 // settles with no overshoot. It also uses real elapsed time, so it feels the same at 30 or 60 fps.
@@ -470,7 +478,7 @@ class Smooth {
   }
 }
 
-const crowdS = new Smooth(1), fitS = new Smooth(0); // eased number of people (rings glide apart/together) and the overall radius that reaches the screen edges
+const crowdS = new Smooth(1), fitS = new Smooth(0); // eased number of people (columns glide apart/together) and the width of one column
 let crowdInit = false, fitInit = false;
 
 // Fade a person in when first detected and out as they go missing, rather than popping.
@@ -482,43 +490,187 @@ function lifeAlpha(person, now) {
   return fadeIn * fadeOut;
 }
 
-// Largest a shape may be on a ring of radius r with `copies` copies and `spacing` between rings:
-// small enough that neighboring rings and neighboring copies only just touch.
-function shapeHalfSize(r, copies, spacing) {
-  const K = TUNE.kaleido;
-  return Math.min(K.ringFill * spacing, K.arcFill * Math.PI * r / copies);
+/* --- organic shapes ---------------------------------------------------------------------
+   Each form lives in a unit box: x runs from -0.5 (the side facing the mirror line) to +0.5 (outward), y from
+   -0.5 to 0.5. A form is a few strokes — an outline plus nested inner loops or a spiral —
+   generated once from a seed (so it never shimmers) and cached. */
+function mulberry32(seed) {
+  let a = seed | 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-function drawShape(kind, s) {
-  if (kind === 'circle') circle(0, 0, s * 2);
-  else if (kind === 'square') { rectMode(CENTER); square(0, 0, s * 1.7); }
-  else triangle(s, 0, -s / 2, s * 0.866, -s / 2, -s * 0.866); // equilateral, pointing outward
+// HSB (hue 0-360, saturation/brightness 0-100) → CSS hsl() string, since the shapes are drawn on the raw canvas.
+function hsbToCss(h, sat, bri) {
+  const s = sat / 100, v = bri / 100;
+  const l = v * (1 - s / 2);
+  const sl = (l === 0 || l === 1) ? 0 : (v - l) / Math.min(l, 1 - l);
+  return `hsl(${Math.round(h) % 360}, ${(sl * 100).toFixed(1)}%, ${(l * 100).toFixed(1)}%)`;
 }
 
-// One ring: `copies` shapes around the center, every other copy mirrored (so with an even count the ring is
-// mirror-symmetric), every other ring offset half a segment — the moonflower layout. Copy 0 sits at 12 o'clock.
-function drawRing(r, ringIndex, spacing, layout, hueDeg, alpha) {
-  if (alpha <= 0.002) return;
-  const K = TUNE.kaleido;
-  const copies = layout.refl, seg = TWO_PI / copies;
-  const s = shapeHalfSize(r, copies, spacing);
-  if (s < 0.5) return;
-  const weave = ringIndex % 2 === 1 ? seg / 2 : 0;
-  fill(hueDeg, K.saturation, K.brightness, alpha);
-  for (let i = 0; i < copies; i++) {
-    push();
-    rotate(-HALF_PI + i * seg + weave);
-    translate(r, 0);
-    if (i % 2 === 1) scale(-1, 1);
-    drawShape(layout.shape, s);
-    pop();
+// Chaikin corner-cutting: turns a rough closed polygon into a soft, rounded loop.
+function chaikin(pts, iterations) {
+  let p = pts;
+  for (let it = 0; it < iterations; it++) {
+    const q = [];
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i], b = p[(i + 1) % p.length];
+      q.push([0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1]], [0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1]]);
+    }
+    p = q;
+  }
+  return p;
+}
+
+const blobCache = new Map();
+function blobFor(kind, seed) {
+  const key = kind + ':' + seed;
+  let g = blobCache.get(key);
+  if (!g) {
+    if (blobCache.size > 1500) blobCache.clear();
+    g = makeBlob(kind, seed);
+    blobCache.set(key, g);
+  }
+  return g;
+}
+
+function makeBlob(kind, seed) {
+  const TAU = Math.PI * 2;
+  const rnd = mulberry32(seed);
+  const between = (lo, hi) => lo + (hi - lo) * rnd();
+  // A smooth random wobble around a loop: a few low-frequency waves with random phases.
+  const wobble = amp => {
+    const ph = [rnd() * TAU, rnd() * TAU, rnd() * TAU];
+    const am = [amp * (0.6 + 0.4 * rnd()), amp * 0.6 * (0.6 + 0.4 * rnd()), amp * 0.35 * (0.6 + 0.4 * rnd())];
+    return th => am[0] * Math.sin(2 * th + ph[0]) + am[1] * Math.sin(3 * th + ph[1]) + am[2] * Math.sin(5 * th + ph[2]);
+  };
+  const loop = (fn, n = 44) => Array.from({ length: n }, (_, j) => fn(TAU * j / n));
+  const raw = [];
+  const add = (pts, closed, fill, w, a) => raw.push({ pts, closed, fill, w, a });
+
+  if (kind === 'circle') {
+    // Whole-body movement: a round, lopsided loop with an inward spiral inside it.
+    const wb = wobble(0.09);
+    add(loop(th => { const r = 0.42 * (1 + wb(th)); return [r * Math.cos(th), r * Math.sin(th)]; }), true, true, 1, 1);
+    const turns = between(1.5, 2.2), start = rnd() * TAU, spiral = [];
+    for (let j = 0; j <= 34; j++) {
+      const t = j / 34, ph = start + t * turns * TAU, r = 0.34 * (1 - t) + 0.03;
+      spiral.push([0.02 + r * Math.cos(ph), r * Math.sin(ph)]);
+    }
+    add(spiral, false, false, 0.8, 0.9);
+  } else if (kind === 'square') {
+    // Stillness: a soft, boxy bowl with smaller, differently-wobbling boxes nested inside it.
+    const e = 2 / between(2.6, 3.6);
+    const box = (k, dx) => {
+      const wb = wobble(0.08);
+      return loop(th => {
+        const c = Math.cos(th), s = Math.sin(th), r = 0.44 * k * (1 + wb(th));
+        return [dx + r * Math.sign(c) * Math.pow(Math.abs(c), e), r * Math.sign(s) * Math.pow(Math.abs(s), e)];
+      });
+    };
+    add(box(1, 0), true, true, 1, 1);
+    add(box(0.64, between(0, 0.06)), true, false, 0.8, 0.9);
+    add(box(0.32, between(0.02, 0.08)), true, false, 0.65, 0.8);
+  } else {
+    // A few body parts moving: a pointed, leaf-like wedge — flat side against the mirror line, tip reaching outward,
+    // edges bowed rather than straight — with smaller wedges nested inside it.
+    const wedge = k => {
+      const wb = wobble(0.07), corners = [[-0.48, -0.46], [0.5, between(-0.06, 0.06)], [-0.48, 0.46]], pts = [];
+      for (let e = 0; e < 3; e++) {
+        const a = corners[e], b = corners[(e + 1) % 3];
+        const nx = -(b[1] - a[1]), ny = b[0] - a[0], len = Math.hypot(nx, ny), bow = between(-0.05, 0.12);
+        for (let j = 0; j < 7; j++) {
+          const t = j / 7, push = bow * Math.sin(Math.PI * t) / len;
+          pts.push([a[0] + (b[0] - a[0]) * t + nx * push, a[1] + (b[1] - a[1]) * t + ny * push]);
+        }
+      }
+      const cx = -0.16, cy = 0;
+      const wobbled = pts.map(([x, y]) => { const f = 1 + wb(Math.atan2(y - cy, x - cx)); return [cx + (x - cx) * f, cy + (y - cy) * f]; });
+      // nest by scaling toward the flat side, so the inner wedges stay anchored to the mirror line
+      return chaikin(wobbled, 2).map(([x, y]) => [-0.48 + (x + 0.48) * k, y * k]);
+    };
+    add(wedge(1), true, true, 1, 1);
+    add(wedge(0.56), true, false, 0.8, 0.9);
+    add(wedge(0.28), true, false, 0.65, 0.8);
+  }
+
+  // Make the whole form less regular: a random lean and tilt.
+  const tilt = between(-0.16, 0.16), lean = between(-0.2, 0.2), cosT = Math.cos(tilt), sinT = Math.sin(tilt);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const st of raw) {
+    st.pts = st.pts.map(([x, y]) => {
+      const px = x * cosT - y * sinT + lean * y, py = x * sinT + y * cosT;
+      minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+      return [px, py];
+    });
+  }
+  // Rescale so the finished form fills its cell exactly: however much it wobbles or leans it can never poke
+  // outside its cell, which is what keeps the whole image inside the screen. Its edge still touches the mirror line.
+  const sx = 1 / (maxX - minX), sy = 1 / (maxY - minY);
+  const strokes = raw.map(st => ({
+    pts: Float32Array.from(st.pts.flatMap(([x, y]) => [(x - minX) * sx - 0.5, (y - minY) * sy - 0.5])),
+    closed: st.closed, fill: st.fill, w: st.w, a: st.a
+  }));
+  return { strokes };
+}
+
+// Trace one stroke AND its reflection as a single path. The reflection is the very same points mirrored across
+// the vertical line at `axisX`. Doing both in one path (one fill, one stroke) means the two halves can never
+// composite in a different order, so the image is an exact mirror even where translucent paint overlaps at the seam.
+function tracePair(ctx, pts, axisX, off, cy, sw, sh, closed) {
+  for (const side of [1, -1]) {
+    for (let i = 0; i < pts.length; i += 2) {
+      const x = axisX + side * (off + pts[i] * sw), y = cy + pts[i + 1] * sh;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    if (closed) ctx.closePath();
   }
 }
 
-function drawCrowdKaleidoscope(now) {
+function drawBlob(ctx, geom, axisX, off, cy, sw, sh, lineW, fillA, strokeA) {
+  for (const s of geom.strokes) {
+    ctx.beginPath();
+    tracePair(ctx, s.pts, axisX, off, cy, sw, sh, s.closed);
+    if (s.fill) { ctx.globalAlpha = fillA; ctx.fill(); }
+    ctx.lineWidth = lineW * s.w;
+    ctx.globalAlpha = strokeA * s.a;
+    ctx.stroke();
+  }
+}
+
+// One person's column: a vertical stack of shapes, drawn on both sides of the mirror line. `bandPos` is how many
+// columns out from the mirror line this one starts (0 = touching it); `bw` is the width of one column.
+function drawColumn(ctx, person, bandPos, bw, layout, alpha, css) {
+  if (alpha <= 0.002) return;
+  const K = TUNE.kaleido, W = width, H = height;
+  const perSide = Math.max(1, Math.round(layout.refl / 2));
+  // Fit the stack exactly into the screen height: first shape's top and last shape's bottom land on the margins.
+  const step = (H * (1 - 2 * K.margin)) / (perSide - 1 + K.overlap);
+  const sh = step * K.overlap, sw = bw * K.overlap;
+  const inner = bandPos * bw;
+  const lineW = constrain(sh * 0.085, 2, 11);
+  const fillA = alpha * 0.75, strokeA = Math.min(1, alpha * 1.7);
+  ctx.fillStyle = css;
+  ctx.strokeStyle = css;
+  for (let i = 0; i < perSide; i++) {
+    const seed = person.id * 1009 + i * 31;
+    const jr = mulberry32(seed ^ 0x9e3779b9); // every shape is a little different in size
+    const jw = 0.82 + 0.18 * jr(), jh = 0.86 + 0.14 * jr();
+    const geom = blobFor(layout.shape, seed);
+    const cy = H * K.margin + sh / 2 + i * step;
+    const cx = inner + sw * jw / 2; // anchored by its inner edge, so the column stays snug against its neighbor
+    drawBlob(ctx, geom, W / 2, cx, cy, sw * jw, sh * jh, lineW, fillA, strokeA); // draws it and its reflection
+  }
+}
+
+function drawCrowdMirror(now) {
   const K = TUNE.kaleido, T = K.smooth;
-  // First person = innermost ring. A new person only gets a ring once their tracking has settled (a few pose
-  // events) — before that their layout is just a placeholder, and drawing it would flash a wrong-sized shape.
+  // First person = the column against the mirror line. A new person only gets a column once their tracking has
+  // settled (a few pose events) — before that their layout is just a placeholder and would flash a wrong-sized shape.
   const list = Array.from(people.values()).filter(p => p.poseEvents >= 5).sort((a, b) => a.id - b.id);
   if (!list.length) return;
   const dt = Math.min(0.1, (typeof deltaTime === 'number' ? deltaTime : 16.7) / 1000); // seconds; capped so a stalled tab doesn't leap
@@ -532,32 +684,28 @@ function drawCrowdKaleidoscope(now) {
     p.d.motion.update(p.m.motion, T.motion, dt);
   });
 
-  // Size the whole thing so the outermost shapes touch the left and right edges of the screen. The fit
-  // itself is eased: it depends on the outer ring's copy count, which changes in steps, and an instant
-  // re-fit would make every ring lurch at once.
-  const halfW = width / 2;
-  const outerCopies = list[list.length - 1].layoutCur.refl;
-  let fitTarget = halfW * 0.9;
-  for (let it = 0; it < 3; it++) fitTarget = halfW - shapeHalfSize(fitTarget, outerCopies, fitTarget / N);
-  if (fitInit) fitS.update(fitTarget, T.fit, dt); else { fitS.snap(fitTarget); fitInit = true; }
-  const L = fitS.v;
-  const spacing = L / N;
+  // Column width: as wide as will let every column fit in half the screen, but never so wide that the shapes
+  // stretch into flat ovals. (The outer edge of the last column lands exactly on the margin.)
+  const usableHalf = width / 2 - width * K.margin;
+  const target = Math.min(usableHalf / (N - 1 + K.overlap), height * K.maxBandFrac / K.overlap);
+  if (fitInit) fitS.update(target, T.fit, dt); else { fitS.snap(target); fitInit = true; }
+  const bw = fitS.v;
 
-  push();
-  translate(width / 2, height / 2);
-  colorMode(HSB, 360, 100, 100, 1);
-  noStroke();
-  for (let i = list.length - 1; i >= 0; i--) { // outermost first, so inner rings sit on top
+  const ctx = drawingContext;
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  for (let i = list.length - 1; i >= 0; i--) { // outermost first, so inner columns sit on top
     const p = list[i];
-    const r = L * p.d.rank.v / N;
-    const hueDeg = lerp(K.hueStill, K.hueMoving, p.d.motion.v);
+    const bandPos = p.d.rank.v - 1;
+    const css = hsbToCss(lerp(K.hueStill, K.hueMoving, p.d.motion.v), K.saturation, K.brightness);
     const alpha = K.opacity * lifeAlpha(p, now);
     if (p.layoutFade < 1) p.layoutFade = Math.min(1, p.layoutFade + 1 / K.layoutFadeFrames);
     const f = p.layoutFade * p.layoutFade * (3 - 2 * p.layoutFade); // smoothstep: eases in and out instead of a hard linear ramp
-    if (f < 1) drawRing(r, i, spacing, p.layoutPrev, hueDeg, alpha * (1 - f));
-    drawRing(r, i, spacing, p.layoutCur, hueDeg, alpha * f);
+    if (f < 1) drawColumn(ctx, p, bandPos, bw, p.layoutPrev, alpha * (1 - f), css);
+    drawColumn(ctx, p, bandPos, bw, p.layoutCur, alpha * f, css);
   }
-  pop();
+  ctx.restore();
 }
 
 /* =============================
@@ -593,6 +741,7 @@ function resetAll() {
   people.clear();
   nextPersonId = 1;
   crowdInit = false; fitInit = false;
+  blobCache.clear();
   latestPoses = [];
   if (window.EnergyBodiesDisplay) {
     try { EnergyBodiesDisplay.tracking(false); } catch (e) { }
