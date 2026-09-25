@@ -25,8 +25,11 @@ once** and gives each person their own simple blob, instead of following a singl
   | **Color** | Stillness vs. motion: blue when still, through violet, to red when moving |
 
   Every other copy on a ring is mirrored and every other ring is offset half a segment, as in moonflower. A
-  change to a ring's copy count or shape must hold for 600ms and then cross-fades in, so detection flicker never
-  makes the image jump. People fade in and out rather than popping.
+  change to a ring's copy count or shape must hold for over a second and then cross-fades in slowly, so detection
+  flicker never makes the image jump. Shapes are translucent and sized so neighbors overlap. Movement is tuned to
+  be calm: rings, spacing, and color glide with a critically damped spring (starts gently, no lurch, no overshoot),
+  and the movement reading itself is quick to notice motion but slow to let go. People fade in and out rather than
+  popping.
 - **No manual sliders, no emotion/region dashboard.** The single-person project let a facilitator hand-tune one
   participant's emotion/region values from an iPad. There's no equivalent concept here — `control.html` is a
   read-only dashboard: live headcount, average crowd movement, and a simple "crowd map" showing one dot per
@@ -87,10 +90,14 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - `TUNE.kaleido.motionFullMean` — how much movement reads as fully "in motion" (fully red).
 - `TUNE.kaleido.hueStill` / `hueMoving` / `saturation` / `brightness` / `opacity` — the color range and look.
 - `TUNE.kaleido.ringFill` / `arcFill` — how large the shapes get relative to the gap between rings / between
-  neighbors on a ring (1.0 / 0.5 = they just touch; raise for overlap).
-- `TUNE.kaleido.layoutDebounceMs` / `layoutFadeFrames` — how long a new copy count or shape must hold, and how
-  long the cross-fade takes.
-- `TUNE.kaleido.ease` — how quickly rings glide into place and colors shift.
+  neighbors on a ring (0.5 / 1.0 = they just touch; the defaults are higher so shapes overlap). Together with
+  `opacity` (lower = more see-through, but murkier color on black) this sets how much overlap you see.
+- `TUNE.kaleido.smooth` — **the main calm/lively dial.** Roughly how many seconds a ring, the ring spacing, the
+  color, and the overall fit take to glide to a new value. Bigger = slower and calmer.
+- `TUNE.kaleido.motionAttack` / `motionRelease` — how quickly the movement reading rises when someone starts moving
+  and falls when they stop. Lower release = color and shape linger longer before settling back.
+- `TUNE.kaleido.layoutDebounceMs` / `layoutFadeFrames` / `fadeInMs` — how long a new copy count or shape must hold,
+  how long the cross-fade takes, and how slowly a new person fades in.
 
 These defaults haven't been tuned against a live multi-person feed — start here and adjust after testing with
 an actual crowd on the venue's camera and hardware.

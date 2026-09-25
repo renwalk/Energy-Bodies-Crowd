@@ -43,9 +43,9 @@ const TUNE = {
   },
   kaleido: {
     // --- layout: one kaleidoscope, centered on screen, outermost ring reaching the screen edges ---
-    ringFill: 0.55,         // max shape half-size relative to the gap between rings (0.5 = neighboring rings just touch)
-    arcFill: 1.0,           // max shape half-size relative to half the gap between neighbors on a ring (1.0 = they just touch)
-    opacity: 0.8,
+    ringFill: 1.0,          // max shape half-size relative to the gap between rings (0.5 = neighboring rings just touch, higher = overlap)
+    arcFill: 1.5,           // max shape half-size relative to half the gap between neighbors on a ring (1.0 = they just touch, higher = overlap)
+    opacity: 0.5,           // translucent, so overlapping shapes show through each other (lower = more see-through, but murkier color on black)
     // --- reflections (copies around each ring) ---
     reflectionsFrom: 'bodyPoints', // 'bodyPoints': each ring gets that person's number of tracked body points
                                    // 'people':     every ring gets one copy per person detected
@@ -56,9 +56,15 @@ const TUNE = {
     // --- stillness vs motion → color (hue in degrees: 215 = blue, 360 = red, passing through violet) ---
     hueStill: 215, hueMoving: 360,
     saturation: 80, brightness: 95,
-    // --- stability: a new layout (copy count / shape) must hold this long, then cross-fades in ---
-    layoutDebounceMs: 600, layoutFadeFrames: 16,
-    ease: { rank: 0.08, crowd: 0.08, motion: 0.08 } // per-frame easing of ring positions, ring spacing and color
+    // --- calm, flowing motion: everything below trades responsiveness for smoothness ---
+    motionAttack: 0.12,     // per pose event: how fast the movement reading rises when someone starts moving...
+    motionRelease: 0.04,    // ...and how slowly it falls when they stop, so color and shape settle gently instead of snapping back
+    layoutDebounceMs: 1200, // a new layout (copy count / shape) must hold this long before it's applied...
+    layoutFadeFrames: 50,   // ...and then cross-fades in over this many frames
+    fadeInMs: 1200,         // how slowly a newly detected person fades in
+    // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer:
+    // a ring moving to a new position, the spacing between rings, the color, and the overall fit to the screen width
+    smooth: { rank: 1.4, crowd: 1.4, motion: 1.6, fit: 1.2 }
   }
 };
 
@@ -180,7 +186,7 @@ class Person {
     this.layoutFade = 1;
 
     // Values actually drawn, eased toward their targets every frame.
-    this.d = { rank: 1, motion: 0 };
+    this.d = { rank: new Smooth(1), motion: new Smooth(0) };
     this.dInit = false;
   }
 }
@@ -344,8 +350,12 @@ function updatePersonMetrics(person, now) {
     if (v > 0.03) movingN++;
   }
   m.bodyPoints = visible;
-  m.motion = visible ? clamp01((sum / visible) / K.motionFullMean) : 0;
-  m.movingFrac = visible ? movingN / visible : 0;
+  // Low-pass the readings: quick to notice movement, slow to let go. This is what makes color and shape
+  // drift rather than flicker with every jittery pose event (and keeps the shape rule from flapping).
+  const motionNow = visible ? clamp01((sum / visible) / K.motionFullMean) : 0;
+  const fracNow = visible ? movingN / visible : 0;
+  m.motion = lerp(m.motion, motionNow, motionNow > m.motion ? K.motionAttack : K.motionRelease);
+  m.movingFrac = lerp(m.movingFrac, fracNow, fracNow > m.movingFrac ? K.motionAttack : K.motionRelease);
 
   const refl = K.reflectionsFrom === 'people' ? Math.max(2, evenUp(people.size)) : Math.max(2, evenUp(visible));
   commitLayout(person, { refl, shape: classifyShape(m) }, now);
@@ -442,11 +452,30 @@ function windowResized() {
 /* =============================
    7) DRAWING — one kaleidoscope for the whole room
    ============================= */
-let crowdD = 1, crowdInit = false; // eased number of people, so rings glide apart/together when someone joins or leaves
+// A critically damped spring ("smooth damp"). Unlike lerp-toward-target every frame — which is fastest at the very
+// start, so anything that changes lurches into motion — this starts from a standstill, accelerates gently, then
+// settles with no overshoot. It also uses real elapsed time, so it feels the same at 30 or 60 fps.
+class Smooth {
+  constructor(v = 0) { this.v = v; this.vel = 0; }
+  snap(v) { this.v = v; this.vel = 0; }
+  update(target, smoothTime, dt) {
+    const omega = 2 / Math.max(0.0001, smoothTime);
+    const x = omega * dt;
+    const decay = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+    const change = this.v - target;
+    const temp = (this.vel + omega * change) * dt;
+    this.vel = (this.vel - omega * temp) * decay;
+    this.v = target + (change + temp) * decay;
+    return this.v;
+  }
+}
+
+const crowdS = new Smooth(1), fitS = new Smooth(0); // eased number of people (rings glide apart/together) and the overall radius that reaches the screen edges
+let crowdInit = false, fitInit = false;
 
 // Fade a person in when first detected and out as they go missing, rather than popping.
 function lifeAlpha(person, now) {
-  const fadeIn = clamp01((now - person.born) / 300);
+  const fadeIn = clamp01((now - person.born) / TUNE.kaleido.fadeInMs);
   const missing = now - person.lastSeen;
   const fadeStart = 250;
   const fadeOut = missing > fadeStart ? clamp01(1 - (missing - fadeStart) / (TUNE.tracking.personTimeoutMs - fadeStart)) : 1;
@@ -487,25 +516,31 @@ function drawRing(r, ringIndex, spacing, layout, hueDeg, alpha) {
 }
 
 function drawCrowdKaleidoscope(now) {
-  const K = TUNE.kaleido, E = K.ease;
-  const list = Array.from(people.values()).sort((a, b) => a.id - b.id); // first person = innermost ring
+  const K = TUNE.kaleido, T = K.smooth;
+  // First person = innermost ring. A new person only gets a ring once their tracking has settled (a few pose
+  // events) — before that their layout is just a placeholder, and drawing it would flash a wrong-sized shape.
+  const list = Array.from(people.values()).filter(p => p.poseEvents >= 5).sort((a, b) => a.id - b.id);
   if (!list.length) return;
+  const dt = Math.min(0.1, (typeof deltaTime === 'number' ? deltaTime : 16.7) / 1000); // seconds; capped so a stalled tab doesn't leap
 
-  crowdD = crowdInit ? lerp(crowdD, list.length, E.crowd) : list.length;
-  crowdInit = true;
-  const N = Math.max(1, crowdD);
+  if (crowdInit) crowdS.update(list.length, T.crowd, dt); else { crowdS.snap(list.length); crowdInit = true; }
+  const N = Math.max(1, crowdS.v);
 
   list.forEach((p, i) => {
-    if (!p.dInit) { p.d.rank = i + 1; p.d.motion = p.m.motion; p.dInit = true; return; }
-    p.d.rank = lerp(p.d.rank, i + 1, E.rank);
-    p.d.motion = lerp(p.d.motion, p.m.motion, E.motion);
+    if (!p.dInit) { p.d.rank.snap(i + 1); p.d.motion.snap(p.m.motion); p.dInit = true; return; }
+    p.d.rank.update(i + 1, T.rank, dt);
+    p.d.motion.update(p.m.motion, T.motion, dt);
   });
 
-  // Size the whole thing so the outermost shapes touch the left and right edges of the screen.
+  // Size the whole thing so the outermost shapes touch the left and right edges of the screen. The fit
+  // itself is eased: it depends on the outer ring's copy count, which changes in steps, and an instant
+  // re-fit would make every ring lurch at once.
   const halfW = width / 2;
   const outerCopies = list[list.length - 1].layoutCur.refl;
-  let L = halfW * 0.9;
-  for (let it = 0; it < 3; it++) L = halfW - shapeHalfSize(L, outerCopies, L / N);
+  let fitTarget = halfW * 0.9;
+  for (let it = 0; it < 3; it++) fitTarget = halfW - shapeHalfSize(fitTarget, outerCopies, fitTarget / N);
+  if (fitInit) fitS.update(fitTarget, T.fit, dt); else { fitS.snap(fitTarget); fitInit = true; }
+  const L = fitS.v;
   const spacing = L / N;
 
   push();
@@ -514,12 +549,13 @@ function drawCrowdKaleidoscope(now) {
   noStroke();
   for (let i = list.length - 1; i >= 0; i--) { // outermost first, so inner rings sit on top
     const p = list[i];
-    const r = L * p.d.rank / N;
-    const hueDeg = lerp(K.hueStill, K.hueMoving, p.d.motion);
+    const r = L * p.d.rank.v / N;
+    const hueDeg = lerp(K.hueStill, K.hueMoving, p.d.motion.v);
     const alpha = K.opacity * lifeAlpha(p, now);
     if (p.layoutFade < 1) p.layoutFade = Math.min(1, p.layoutFade + 1 / K.layoutFadeFrames);
-    if (p.layoutFade < 1) drawRing(r, i, spacing, p.layoutPrev, hueDeg, alpha * (1 - p.layoutFade));
-    drawRing(r, i, spacing, p.layoutCur, hueDeg, alpha * p.layoutFade);
+    const f = p.layoutFade * p.layoutFade * (3 - 2 * p.layoutFade); // smoothstep: eases in and out instead of a hard linear ramp
+    if (f < 1) drawRing(r, i, spacing, p.layoutPrev, hueDeg, alpha * (1 - f));
+    drawRing(r, i, spacing, p.layoutCur, hueDeg, alpha * f);
   }
   pop();
 }
@@ -556,7 +592,7 @@ function resetAll() {
   try { stopTrackingImpl(); } catch (e) { }
   people.clear();
   nextPersonId = 1;
-  crowdInit = false;
+  crowdInit = false; fitInit = false;
   latestPoses = [];
   if (window.EnergyBodiesDisplay) {
     try { EnergyBodiesDisplay.tracking(false); } catch (e) { }
