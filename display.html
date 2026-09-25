@@ -8,7 +8,9 @@
   <link rel="icon" href="data:,">
   <!-- Local libs (blocking) -->
   <!-- Load eb-init.js FIRST - before p5.js and sketch.js -->
-  <script src="./js/eb-init.js"></script>
+  <!-- Scripts are loaded with a fresh timestamp so a plain reload always picks up edits — static servers
+       like python's http.server let the browser cache them heuristically, which hides changes. -->
+  <script>document.write('<script src="./js/eb-init.js?t=' + Date.now() + '"><\/script>');</script>
 
   <!-- Then load p5.js -->
   <script src="https://cdn.jsdelivr.net/npm/p5@1.4.0/lib/p5.min.js"></script>
@@ -173,7 +175,7 @@
   </script>
 
   <!-- Your renderer LAST so it can see EnergyBodiesDisplay -->
-  <script defer src="./js/sketch.js"></script>
+  <script>document.write('<script src="./js/sketch.js?t=' + Date.now() + '"><\/script>');</script>
 </body>
 
 </html>
