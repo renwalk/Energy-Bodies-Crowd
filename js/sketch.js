@@ -59,12 +59,12 @@ const TUNE = {
     texture: 0.22,          // fine ripple texture that is always present, even in glassy-calm water (0 = perfectly smooth)
     // --- how a wave responds to its person: calm = smooth rolling swell, storm = steep, choppy, fast ---
     ampCalm: 0.85, ampSwell: 1.25, stormAmpBoost: 0.5,     // wave height: still / vigorous / extra in a storm
-    freqCalm: 0.10, freqSwell: 0.32, stormFreqBoost: 0.9, // how often a crest passes (per second): still / vigorous / extra in a storm
+    freqCalm: 0.10, freqSwell: 0.30, stormFreqBoost: 0.55, // how often a crest passes (per second): still / vigorous / extra in a storm
     crestsPerPoint: 0.55,   // waves up the screen per tracked body point (a full body of 17 points = 5 across the screen, 11 points = 3)
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
     chop: 1.0,              // slope of the crossing chop waves that roughen the surface, at full storm
     crestSharpen: 0.6,      // how much a storm sharpens crests and widens troughs
-    gust: 0.6,              // how much a storm makes the waves surge and stall instead of rolling steadily
+    gust: 0.25,             // how much a storm makes the waves surge and stall instead of rolling steadily
     curve: 0.5,             // how much wave crests bow toward the sides of the screen
     crossSwell: 0.15,       // slope of a gentle, slower second swell, so even calm water isn't perfectly regular
     // --- reading a storm: vigorous movement that keeps going + sudden bursts + erratic, abrupt movement ---
@@ -72,8 +72,8 @@ const TUNE = {
     burstFull: 0.25,        // size of a sudden burst of speed that counts as a full storm
     jerkFull: 0.9,          // how erratically the speed changes (0-1) that counts as fully abrupt
     stormSustainedWeight: 0.4, stormJerkWeight: 0.6, stormBurstWeight: 0.6, // how much each of the three contributes (capped at 1 together)
-    stormAttack: 0.25,      // per pose event: how fast the storm reading builds (quick, so abrupt movement hits hard)...
-    stormRelease: 0.03,     // ...and how slowly it dies away (slow, so the sea settles gently)
+    stormAttack: 0.12,      // per pose event: how fast the storm reading builds (quick, so abrupt movement hits hard)...
+    stormRelease: 0.02,     // ...and how slowly it dies away (slow, so the sea settles gently)
     // --- body shape -> wave profile: asymmetrical = pointed, else rigid/upright = flat-topped, else soft/relaxed = rounded. These
     //     are the centers of smooth transitions, not hard switches — a body between two shapes gets a blend of both. ---
     asymThreshold: 0.5,     // asymmetry score (0 = perfect mirror, 1 = very lopsided) at which the wave is half-way to pointed
@@ -99,8 +99,8 @@ const TUNE = {
     fadeInMs: 1200,         // how slowly a newly detected person's wave builds
     // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer. "Up" is
     // growing/speeding up, "Down" is settling; a storm builds fast and dies slowly.
-    smooth: { rank: 1.4, crowd: 1.4, motion: 1.6, form: 2.2, count: 1.6,
-              ampUp: 1.0, ampDown: 2.4, freqUp: 0.9, freqDown: 2.4, stormUp: 0.5, stormDown: 3.0 }
+    smooth: { rank: 1.4, crowd: 1.4, motion: 2.2, form: 2.2, count: 2.2,
+              ampUp: 1.8, ampDown: 3.0, freqUp: 2.0, freqDown: 3.0, stormUp: 1.6, stormDown: 4.0 }
   }
 };
 
@@ -667,7 +667,7 @@ function mulberry32(seed) {
 }
 
 const WTAU = Math.PI * 2;
-const CHOP_RATE = [0.9, 1.4, 2.0]; // how fast each crossing chop wave moves, in cycles per second at full storm (x1.35) — kept under ~3 so the shimmer never gets strobe-like
+const CHOP_RATE = [0.55, 0.85, 1.2]; // how fast each crossing chop wave moves, in cycles per second at full storm (x1.35) — kept under ~3 so the shimmer never gets strobe-like
 const MAX_WAVES = 12; // must match the shader's array size (and TUNE.tracking.maxPeople)
 
 /* --- the water shader ----------------------------------------------------------------------------------------------
@@ -898,9 +898,9 @@ function drawCrowdWater(now) {
     }
     const st = d.storm.v;
     // Phase only ever moves forward. A storm makes the surge uneven (gusts) — the phase still never jumps.
-    const gust = 1 + K.gust * st * Math.sin(WTAU * 0.37 * timeS + p.id * 1.7);
+    const gust = 1 + K.gust * st * Math.sin(WTAU * 0.15 * timeS + p.id * 1.7);
     p.phase += WTAU * d.freq.v * gust * dt;
-    for (let j = 0; j < 3; j++) p.chopPh[j] += WTAU * CHOP_RATE[j] * (0.35 + 1.0 * st) * dt;
+    for (let j = 0; j < 3; j++) p.chopPh[j] += WTAU * CHOP_RATE[j] * (0.3 + 0.7 * st) * dt;
 
     const wsum = (d.wC.v + d.wS.v + d.wT.v) || 1;
     const hue = lerp(K.hueStill, K.hueMoving, d.motion.v) / 360;

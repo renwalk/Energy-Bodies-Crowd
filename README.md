@@ -33,7 +33,7 @@ following a single participant.
   of them: vigorous movement that keeps going; a *burst* (this moment's speed running well ahead of its own recent
   average, so a jolt roughens the water even from a standstill); and *jerk* (how erratically the speed changes — a
   smooth, flowing dance has a speed that rises and falls evenly, abrupt jabbing movement doesn't). A storm builds
-  quickly and settles slowly. It changes the water in four ways at once: taller, steeper, more tightly packed waves;
+  steadily and settles slowly. It changes the water in four ways at once: taller, steeper, more tightly packed waves;
   crossing wave trains that break straight crests into irregular peaks; a swirl that bends the water's own
   coordinates into turbulent currents; and brighter, finer caustics.
 
@@ -44,9 +44,10 @@ following a single participant.
   steepness — that bound is what keeps it looking like water instead of spikes.
 
   Movement is tuned to be calm: band positions, color, wave profile, wave size and speed all glide with a critically
-  damped spring (starts gently, no lurch, no overshoot), and a storm builds fast and dies slowly. Wave phase only
-  ever moves forward, so a change of speed can never make the water jump. The fastest storm texture moves at under
-  about 3 cycles per second, so it never gets strobe-like. People fade in and out rather than popping.
+  damped spring (starts gently, no lurch, no overshoot), and a storm builds steadily and dies slowly. Wave phase only
+  ever moves forward, so a change of speed can never make the water jump. A storm builds over a couple of seconds and
+  fades over several, and its surge is only gently uneven, so even rough water rolls rather than jerks. The fastest storm
+  texture moves at about 1 cycle per second, so it never gets strobe-like. People fade in and out rather than popping.
 - **No manual sliders, no emotion/region dashboard.** The single-person project let a facilitator hand-tune one
   participant's emotion/region values from an iPad. There's no equivalent concept here — `control.html` is a
   read-only dashboard: live headcount, average crowd movement, and a simple "crowd map" showing one dot per
