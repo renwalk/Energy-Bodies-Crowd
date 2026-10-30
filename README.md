@@ -2,7 +2,7 @@
 
 A multi-person variant of [Energy Bodies](https://github.com/renwalk/Energy-Bodies), the p5.js + ml5 PoseNet
 installation that translates movement into a living visual form. This version tracks **everyone in frame at
-once** and turns the room into one body of water, with each person shaping their own band of it, instead of
+once** and turns the room into one sheet of marbled ink, with each person shaping their own band of it, instead of
 following a single participant.
 
 ## What changed from the single-person version
@@ -13,9 +13,9 @@ following a single participant.
   person's band of water from swapping with someone else's as poses shuffle order frame to frame. (Matching takes the
   closest person/skeleton pairs first, so when someone leaves it is the right person's band that goes.) A tracked person who
   isn't matched to a skeleton for `personTimeoutMs` (default 1s) is dropped.
-- **You are inside the water.** The whole screen is a flowing field of water texture — soft luminous swells, with
-  bright, shifting **caustic webs** where the waves focus light — in the way light looks from *inside* water. There is
-  no horizon, sky, sun or perspective: it isn't an ocean you look across, it's a substance you're immersed in.
+- **Ink marbling.** The whole screen is a sheet of marbled ink: black, white and blue lines that roll, fold and swirl,
+  like paper dipped on a tray of floating ink. Each person's waves are the *contours* of the ink; a storm drags the
+  whole sheet into folds and whirlpools, like a comb pulled through it.
   A vertical mirror line runs down the middle, and the image is an exact mirror across it. **Each person owns a
   horizontal band** of the water running the full width of the screen: the first person is the bottom band and every
   additional person adds a band above it. The bands are spread evenly down the screen, so they always fill it
@@ -37,7 +37,10 @@ following a single participant.
   crossing wave trains that break straight crests into irregular peaks; a swirl that bends the water's own
   coordinates into turbulent currents; and brighter, finer caustics.
 
-  **How it's drawn.** The image is rendered on the GPU (WebGL), one pixel at a time: the water's height at each point
+  **How it's drawn.** (Written for the earlier water version; the marbling reads the same wave field as contour lines
+  of ink and then drags the coordinates around — a few slow sinusoidal currents plus up to three drifting whirlpools
+  whose twist grows with the storm. Lines stay an exact mirror because everything depends on |x|.)
+ The image is rendered on the GPU (WebGL), one pixel at a time: the water's height at each point
   is a blend of every person's waves weighted by how close the point is to that person's band; its slope gives the
   soft relief and its curvature gives the caustics. Every wave's height is its *slope* times its wavelength, so a
   storm can pack in as many fine waves as it likes without the surface ever getting steeper than the chosen
@@ -112,7 +115,10 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - `TUNE.water.chop` / `crestSharpen` / `gust` / `texture` — the crossing chop waves, how much a storm sharpens
   crests, how much a storm makes the surge uneven, and the fine ripple texture that is always present (0 = perfectly
   smooth when calm).
-- `TUNE.water.caustics` / `glow` — how strongly curvature is turned into bright light webs, and how bright they are.
+- `TUNE.water.inkDensity` / `inkLayers` / `inkLine` — how many ink lines per wave, how many even layers fill the screen
+  height, and how heavy the black lines are.
+- `TUNE.water.dragCalm` / `dragStorm` / `flowCalm` / `flowStorm` — how far the ink is dragged (and how strongly the
+  whirlpools twist) when calm / in a storm, and how fast those currents drift. Lower `dragStorm` for fewer whirlpools.
 - `TUNE.water.bandOverlap` — how softly one person's band blends into the next.
 - `TUNE.water.crestsPerPoint` / `stormCrestBoost` — waves up the screen per tracked body point, and how many more a
   storm packs in. `reflectionsFrom: 'people'` makes every band use one count per person instead.
@@ -148,7 +154,7 @@ an actual crowd on the venue's camera and hardware.
 - Currents that follow a person's actual limb movement, for example the direction a hand sweeps.
 - Another stage of color beyond the blue-to-rose shift, if wanted.
 
-Earlier versions are kept in git: the tag `v6-mirror-columns` is the mirrored image of columns of organic shapes
+Earlier versions are kept in git: the tag `v9-water` is the flowing-water version, the tag `v6-mirror-columns` is the mirrored image of columns of organic shapes
 (one continuous morphing line each), the branch `multiple` is a kaleidoscope of 3D orbs per person, and the tag
 `v4-kaleidoscope-orbs` marks that branch's final state.
 

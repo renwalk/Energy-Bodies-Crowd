@@ -1,25 +1,23 @@
 /* ============================================================================
-   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v9: inside the water)
-   One image for the whole room: you are INSIDE the water, not looking at its surface.
-   The screen is a field of flowing water texture — soft luminous swells with bright,
-   shifting caustic webs where the waves focus light — with no horizon, sky, sun or
-   perspective.
+   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v10: ink marbling)
+   One image for the whole room: the screen is a sheet of marbled ink — bands of black, white
+   and blue ink that flow, fold and swirl into each other.
      - PoseNet runs in 'multiple' detection mode and a lightweight nearest-neighbor
        tracker gives each person a stable id across frames
-     - Each person owns a HORIZONTAL BAND of the water, running the full width of the
+     - Each person owns a HORIZONTAL BAND of the sheet, running the full width of the
        screen. The first person is the bottom band; every additional person adds a band
        above it. The bands are spread evenly down the screen, so they always fill it,
        and they blend smoothly into one another. A vertical mirror line runs down the
        middle of the screen
-     - Movement sets how rough a person's band is. Still = slow, glassy, soft swell;
-       calm, slow movement = long smooth rolling waves; fast and abrupt movement = a
-       storm: swirling, fine, fast-moving texture with sharp caustics, building quickly
-       and settling slowly
-     - Body shape sets the wave profile: soft and relaxed = rounded swells,
-       rigid and upright = flat-topped, asymmetrical = pointed and leaning
+     - Movement sets how disturbed the ink is. Still = long, smooth, gently waving lines;
+       calm, slow movement = rolling marbled ripples; fast and abrupt movement = ink dragged
+       into folds and whirlpools, building steadily and settling slowly
+     - Body shape sets the wave profile (which shapes the ink's lines): soft and relaxed =
+       rounded, rigid and upright = flat-topped, asymmetrical = pointed and leaning
      - The number of body points sets how many waves there are; stillness vs motion
        sets the color: blue (calm) -> violet -> rose (stormy)
-     - Rendered on the GPU (WebGL)
+     - Rendered on the GPU (WebGL). The wave field is the same as the earlier water version
+       (tag v9-water); the marbling reads it as contour lines of ink
    IMPORTANT: Load eb-init.js BEFORE this file!
    ============================================================================ */
 
@@ -59,9 +57,15 @@ const TUNE = {
     texture: 0.22,          // fine ripple texture that is always present, even in glassy-calm water (0 = perfectly smooth)
     // --- how a wave responds to its person: calm = smooth rolling swell, storm = steep, choppy, fast ---
     ampCalm: 0.85, ampSwell: 1.25, stormAmpBoost: 0.5,     // wave height: still / vigorous / extra in a storm
-    freqCalm: 0.10, freqSwell: 0.30, stormFreqBoost: 0.55, // how often a crest passes (per second): still / vigorous / extra in a storm
+    freqCalm: 0.10, freqSwell: 0.30, stormFreqBoost: 0.35, // how often a crest passes (per second): still / vigorous / extra in a storm
     crestsPerPoint: 0.55,   // waves up the screen per tracked body point (a full body of 17 points = 5 across the screen, 11 points = 3)
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
+    inkDensity: 1.5,        // ink layers (contour lines) per wave height: more = finer, busier lines
+    inkLayers: 13,          // even layers of ink across the whole screen height (wavy lines even where the water is flat)
+    inkLine: 0.15,          // weight of the black lines (fraction of a layer)
+    dragCalm: 0.06,         // how far the ink is dragged around when calm: gentle S-curves...
+    dragStorm: 0.22,        // ...and in a full storm: folds and whirlpools
+    flowCalm: 0.12, flowStorm: 0.4,  // how fast the drag currents drift (radians per second) when calm / in a storm
     chop: 1.0,              // slope of the crossing chop waves that roughen the surface, at full storm
     crestSharpen: 0.6,      // how much a storm sharpens crests and widens troughs
     gust: 0.25,             // how much a storm makes the waves surge and stall instead of rolling steadily
@@ -667,7 +671,7 @@ function mulberry32(seed) {
 }
 
 const WTAU = Math.PI * 2;
-const CHOP_RATE = [0.55, 0.85, 1.2]; // how fast each crossing chop wave moves, in cycles per second at full storm (x1.35) — kept under ~3 so the shimmer never gets strobe-like
+const CHOP_RATE = [0.4, 0.6, 0.85]; // how fast each crossing chop wave moves, in cycles per second at full storm (x1.35) — kept under ~3 so the shimmer never gets strobe-like
 const MAX_WAVES = 12; // must match the shader's array size (and TUNE.tracking.maxPeople)
 
 /* --- the water shader ----------------------------------------------------------------------------------------------
@@ -686,6 +690,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
+uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
 uniform vec4 uP2[MAXW];   // hue (0-1), rank (1 = the bottom band), chop phase 0, chop phase 1
@@ -765,34 +770,63 @@ vec3 hsv2rgb(vec3 c) {
 
 float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 
+// The ink field at q: the waves' height (normalised by wave size, so about -1..1 per wave) read AFTER the whole surface has
+// been dragged around, like a comb pulled through ink. The drag is a few layers of slow sinusoidal currents of growing
+// frequency, built from |x| so the picture stays an exact mirror. x = field, y = where up the screen this ink really is.
+vec2 inkAt(vec2 q, float wa, float wt) {
+  vec2 p = vec2(sqrt(q.x * q.x + 0.0016) - 0.04, q.y);
+  // whirlpools: a few slowly drifting vortices twist the ink around themselves (a calm sea barely turns, a storm winds spirals)
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    vec2 c = vec2(0.15 + 0.85 * (0.5 + 0.5 * sin(0.31 * wt + fi * 2.1)), 0.9 * sin(0.23 * wt + fi * 1.3 + 0.7));
+    vec2 d = p - c;
+    float ang = (mod(fi, 2.0) < 0.5 ? 1.0 : -1.0) * wa * 6.0 * exp(-dot(d, d) / 0.14);
+    float cs = cos(ang), sn = sin(ang);
+    p = c + vec2(cs * d.x - sn * d.y, sn * d.x + cs * d.y);
+  }
+  p += wa * vec2(sin(p.y * 2.3 + wt + 1.0), sin(p.x * 2.9 - 0.8 * wt));
+  p += 0.55 * wa * vec2(sin(p.y * 4.6 - 1.3 * wt + 2.0), sin(p.x * 5.3 + 0.9 * wt + 4.0));
+  p += 0.30 * wa * vec2(sin(p.y * 8.9 + 1.7 * wt), sin(p.x * 9.7 - 1.1 * wt + 1.0));
+  float tau = clamp((p.y + 1.0) * 0.5, 0.0, 1.0);
+  float h = heightAt(p);
+  return vec2(h / (lookAt(tau).z + 0.02), tau);
+}
+
 void main() {
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / (0.5 * uRes.y);       // y: -1..1, x: -aspect..aspect, symmetric about the middle
-  float e = 1.6 / uRes.y;                                          // about a pixel and a half, in the same units
-  float h0 = heightAt(q);
-  float hxp = heightAt(q + vec2(e, 0.0)), hxm = heightAt(q - vec2(e, 0.0));
-  float hyp = heightAt(q + vec2(0.0, e)), hym = heightAt(q - vec2(0.0, e));
-  float gx = (hxp - hxm) / (2.0 * e), gy = (hyp - hym) / (2.0 * e);   // slope across / up the screen
-  float lap = clamp((hxp + hxm + hyp + hym - 4.0 * h0) / (e * e), -40.0, 40.0);   // curvature: where the surface focuses (or spreads) light
+  float e = 1.6 / uRes.y;
+  float pix = 2.0 / uRes.y;                                        // one pixel, in the same units
 
-  vec3 lk = lookAt(clamp((q.y + 1.0) * 0.5, 0.0, 1.0));
-  float hue = lk.x, storm = lk.y, amp = lk.z;
+  vec3 lk0 = lookAt(clamp((q.y + 1.0) * 0.5, 0.0, 1.0));
+  float wa = uWarp0 + uWarp1 * lk0.y;                              // a storm drags the ink much further
+  vec2 f0 = inkAt(q, wa, uWT);
+  float fxp = inkAt(q + vec2(e, 0.0), wa, uWT).x, fxm = inkAt(q - vec2(e, 0.0), wa, uWT).x;
+  float fyp = inkAt(q + vec2(0.0, e), wa, uWT).x, fym = inkAt(q - vec2(0.0, e), wa, uWT).x;
+  vec2 g = vec2(fxp - fxm, fyp - fym) / (2.0 * e);
 
-  // soft relief: light comes from above, so slopes facing up the screen glow and the others fall into shadow
-  vec3 n = normalize(vec3(-gx * 1.2, -gy * 1.2, 1.0));
-  float lit = clamp(dot(n, normalize(vec3(0.0, 0.7, 0.7))), 0.0, 1.0);
-  float crest = smoothstep(-0.6, 1.0, h0 / (amp + 0.02));
+  vec3 lk = lookAt(f0.y);
+  float hue = lk.x;
 
-  vec3 deep = hsv2rgb(vec3(hue, 0.92, 0.12 + 0.05 * (1.0 - storm)));
-  vec3 glowc = hsv2rgb(vec3(hue, 0.72, 0.62));
-  vec3 col = mix(deep, glowc, clamp(0.08 + 0.26 * lit * lit + 0.20 * crest, 0.0, 1.0));
+  // contour lines of the field, like the lines in marbled paper: u counts ink layers, aa is how wide one pixel is in layers
+  float u = f0.x * uDens + f0.y * uLayers;                         // the waves' own contours, plus even layers of ink poured down the screen — both dragged around together
+  float aa = clamp(length(g) * uDens * pix * 0.8, 0.004, 0.35);
+  float s0 = fract(u);
+  float d0 = min(s0, 1.0 - s0);                                    // distance (in layers) to the nearest whole layer
 
-  // caustics: light focused by the curved surface into bright, shifting webs. Rougher water curves more, so a storm's
-  // webs are finer and brighter than a calm band's soft ones.
-  float focus = clamp(1.0 - uCaus * lap, 0.0, 2.0);
-  float web = pow(focus, 3.2) * 0.075;
-  col += hsv2rgb(vec3(hue - 0.03, 0.30, 1.0)) * web * uGlow * (0.55 + 0.45 * storm);
+  vec3 paper = hsv2rgb(vec3(hue, 0.26, 0.88));                      // pale blue paper; rose-lilac when moving
+  vec3 dye   = hsv2rgb(vec3(hue - 0.065, 0.78, 0.80));              // turquoise ink; magenta when moving
+  vec3 ink   = vec3(0.025, 0.03, 0.055);
+  vec3 white = vec3(0.96, 0.975, 1.0);
 
-  col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x), gl_FragCoord.y)) - 0.5) / 255.0;   // dither, so the dark gradients don't band (mirrored, like everything else)
+  float patch = smoothstep(-0.25 - aa, 0.25 + aa, sin(3.14159 * u + 1.0 + 1.5 * f0.y));      // broad patches of dye, every other layer or so
+  vec3 col = mix(paper, dye, patch * 0.9);
+  float wb = uLine * (0.75 + 0.35 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // the black line varies in weight
+  float lineW = 1.0 - smoothstep(wb - aa, wb + aa, d0);
+  float whiteW = smoothstep(wb + 0.05 - aa, wb + 0.05 + aa, d0) - smoothstep(wb + 0.15 - aa, wb + 0.15 + aa, d0);
+  col = mix(col, white, whiteW * 0.95);
+  col = mix(col, ink, lineW);
+
+  col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x), gl_FragCoord.y)) - 0.5) / 255.0;   // dither (mirrored, like everything else)
   gl_FragColor = vec4(col, 1.0);
 }`;
 
@@ -826,7 +860,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uP0', 'uP1', 'uP2', 'uP3']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -849,6 +883,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
+    gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -857,6 +892,7 @@ const WaterGL = {
   }
 };
 
+let inkDragPhase = 0;
 function drawCrowdWater(now) {
   const K = TUNE.water, T = K.smooth;
   // First person = the band nearest the viewer. A new person only gets a wave once their tracking has settled (a few
@@ -911,7 +947,11 @@ function drawCrowdWater(now) {
     W.p3[o] = p.chopPh[2];
   });
 
-  const ok = W.render({ count: list.length, N, sig: K.bandOverlap * 0.5 / N });
+  // The ink's drag currents drift forward at a pace set by the crowd's average storm — phase only ever advances, so a change of pace never jumps
+  const stAvg = list.reduce((a, p) => a + p.d.storm.v, 0) / list.length;
+  inkDragPhase += lerp(K.flowCalm, K.flowStorm, stAvg) * dt;
+
+  const ok = W.render({ count: list.length, N, sig: K.bandOverlap * 0.5 / N, wt: inkDragPhase });
   if (!ok) { // no WebGL: say so on screen rather than showing nothing
     drawingContext.save(); drawingContext.fillStyle = '#fff'; drawingContext.font = '16px sans-serif';
     drawingContext.fillText('The water needs WebGL: ' + W.error, 12, 90); drawingContext.restore();
