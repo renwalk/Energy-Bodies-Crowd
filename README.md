@@ -141,6 +141,13 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   smooth when calm).
 - `TUNE.water.inkDensity` / `inkLayers` / `inkLine` — how many ink bands follow each wave, how many even layers fill the
   screen height (more = finer stripes), and how wide the dark band is (0.25 = half dark, half light).
+- **What sets a drop's size:** that person's *energy* — their movement reading plus a little of their storm reading — so a still person's drop
+  is about half the size of a very active person's (it grows as they move and shrinks as they settle). It is capped relative to the screen, so a
+  lone person doesn't get a drop the size of the whole picture, and each person gets a small random variation so no two are alike. The drop's
+  pool also changes color with movement (pale pink on white water when calm, pale blue on pink water when moving) so it always stands out.
+- **How movement is read:** each body point's speed is judged relative to that person's own body size (so someone far from the camera still
+  registers), then averaged over the body. `velNormMax` (how fast a point must move to count as fully active) and `motionFullMean` (how much of
+  the body must be active to read as fully in motion) set the sensitivity: lower either to make the water respond to smaller movements.
 - `TUNE.water.dropSize` / `dropRing` / `ripples` / `rippleReach` — **one drop of ink per person**, living *inside* the flowing water: the
   currents carry and bend each drop (so its rim is never a perfect shape and drifts), the ink bands wrap and crowd around its rim as if
   it had been pushed aside, and each drop sends out its own concentric ripples (more body points = more ripples). Where drops overlap

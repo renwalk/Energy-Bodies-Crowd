@@ -53,7 +53,7 @@ const TUNE = {
     velEMA: 0.18,          // smoothing on each point's own velocity reading (lower = smoother, more lag)
     velDeadzone: 0.0025,  // raw per-frame velocity below this is treated as 0 — absorbs PoseNet's baseline detection jitter on a still body
     velNormMin: 0.0,      // velocity (normalized by video diagonal per frame) that reads as "still"
-    velNormMax: 0.05,     // velocity that reads as "fully activated"
+    velNormMax: 0.035,    // velocity that reads as "fully activated"
     presenceInRate: 0.3,  // how fast a keypoint fades IN once PoseNet is confident about it again
     presenceOutRate: 0.12 // how fast a keypoint fades OUT when lost — slow, so a borderline/flickering detection doesn't pop on and off
   },
@@ -83,12 +83,12 @@ const TUNE = {
     darkHueStill: 215, darkHueMoving: 245, darkSat: 0.62,    // dark ink: blue when still, toward indigo when moving
     lightHueStill: 205, lightHueMoving: 335, lightSat: 0.05, lightSatMoving: 0.20,   // light ink: near-white (a breath of blue) when still, warming to pink as people move
     grain: 0,              // optional paper speckle on the ink (0 = none: smooth, like water)
-    dropSize: 0.62,        // size of each person's circular drop of ink, as a fraction of their band's height (0 = no circles)
+    dropSize: 0.4,         // the size of each person's drop of ink when they are very active, as a fraction of half the screen height at most (0 = no circles). It grows with that person's movement: about half this size when still
     ripples: 1.0,          // how strongly each drop sends out its own concentric waves (0 = none; they overlap and interfere between drops)
     rippleReach: 1.0,      // how far those ripples reach, in drop-radii
-    dropHue: 330, dropSat: 0.15,           // color of the pool inside each drop (hue degrees: 335 = pink, 215 = blue) and how strong it is
+    dropHue: 330, dropHueMoving: 205, dropSat: 0.24,   // color of the pool inside each drop (hue degrees: 330 = pink, 205 = pale blue) when the water is calm and when it's moving — it shifts so the drop always stands out from the ink around it — and how strong it is
     dropCoreHue: 228, dropCoreSat: 0.80,   // color of the dense ink at the drop's heart as it first touches down
-    dropRing: 0.009,       // weight of the dark ring around each drop
+    dropRing: 0.014,       // weight of the dark ring around each drop
     sheen: 0.4,            // how much the waves catch soft light and glints on the water's surface (0 = flat)
     inkLine: 0.29,          // width of the dark ink bands as a fraction of a layer (0.25 = half dark, half light)
     dragCalm: 0.09,         // how far the ink is dragged around when calm: gentle S-curves...
@@ -104,8 +104,8 @@ const TUNE = {
     burstFull: 0.25,        // size of a sudden burst of speed that counts as a full storm
     jerkFull: 0.9,          // how erratically the speed changes (0-1) that counts as fully abrupt
     stormSustainedWeight: 0.4, stormJerkWeight: 0.6, stormBurstWeight: 0.6, // how much each of the three contributes (capped at 1 together)
-    stormAttack: 0.06,      // per pose event: how fast the storm reading builds (quick, so abrupt movement hits hard)...
-    stormRelease: 0.015,     // ...and how slowly it dies away (slow, so the sea settles gently)
+    stormAttack: 0.10,      // per pose event: how fast the storm reading builds (quick, so abrupt movement hits hard)...
+    stormRelease: 0.02,     // ...and how slowly it dies away (slow, so the sea settles gently)
     // --- body shape -> wave profile: asymmetrical = pointed, else rigid/upright = flat-topped, else soft/relaxed = rounded. These
     //     are the centers of smooth transitions, not hard switches — a body between two shapes gets a blend of both. ---
     asymThreshold: 0.5,     // asymmetry score (0 = perfect mirror, 1 = very lopsided) at which the wave is half-way to pointed
@@ -121,16 +121,16 @@ const TUNE = {
     reflectionsFrom: 'bodyPoints', // 'bodyPoints': that person's number of tracked body points, rounded up to even
                                    // 'people':     one per person detected instead
     // --- movement -> color (hue in degrees: 215 = blue, 270 = violet, 320 = rose/magenta, 360 = red) ---
-    motionFullMean: 0.3,    // mean keypoint activation that reads as "fully in motion"
+    motionFullMean: 0.22,   // mean keypoint activation that reads as "fully in motion"
     // --- calm, flowing motion: everything below trades responsiveness for smoothness ---
-    motionAttack: 0.06,     // per pose event: how fast the movement reading rises when someone starts moving...
-    motionRelease: 0.02,    // ...and how slowly it falls when they stop, so color and waves settle gently instead of snapping back
+    motionAttack: 0.10,     // per pose event: how fast the movement reading rises when someone starts moving...
+    motionRelease: 0.03,    // ...and how slowly it falls when they stop, so color and waves settle gently instead of snapping back
     countDebounceMs: 2500,  // a new crest count must hold this long before the water starts changing to it
     fadeInMs: 1200,         // how slowly a newly detected person's wave builds
     // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer. "Up" is
     // growing/speeding up, "Down" is settling; a storm builds fast and dies slowly.
-    smooth: { rank: 3.0, crowd: 3.0, motion: 3.5, form: 3.5, count: 4.0,
-              ampUp: 3.0, ampDown: 4.0, freqUp: 3.0, freqDown: 4.0, stormUp: 3.0, stormDown: 5.0, dropUp: 0.2, dropDown: 0.5 }
+    smooth: { rank: 3.0, crowd: 3.0, motion: 1.8, form: 3.0, count: 3.0,
+              ampUp: 1.8, ampDown: 3.5, freqUp: 2.0, freqDown: 3.5, stormUp: 1.8, stormDown: 4.5, dropUp: 0.2, dropDown: 0.5 }
   }
 };
 
@@ -433,7 +433,10 @@ function updatePersonPoints(person, pose, now, center) {
       if (pt.presence < 0.15) { pt.x = k.position.x; pt.y = k.position.y; pt.vx = k.position.x; pt.vy = k.position.y; }
       const dx = (k.position.x - pt.vx) / diag;
       const dy = (k.position.y - pt.vy) / diag;
-      const rawVel = Math.max(0, Math.hypot(dx, dy) - P.velDeadzone); // absorb baseline detection jitter before it ever reaches the smoothing
+      // Speed is judged relative to the person's own size: someone far from the camera moves fewer pixels for the same gesture, so their speed is scaled up
+      // (and a close one's down). The jitter dead zone is applied in pixels first, so scaling doesn't amplify camera noise.
+      const bodyRef = person.bodyScale ? constrain(person.bodyScale * 10, 0.35 * diag, 1.2 * diag) : diag;
+      const rawVel = Math.max(0, Math.hypot(dx, dy) - P.velDeadzone) * (diag / bodyRef); // absorb baseline detection jitter before it ever reaches the smoothing
 
       pt.vx = lerp(pt.vx, k.position.x, P.velRefSmoothing);
       pt.vy = lerp(pt.vy, k.position.y, P.velRefSmoothing);
@@ -819,7 +822,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uDropHue, uDropSat, uCoreHue, uCoreSat;
+uniform float uDropHue, uDropHue1, uDropSat, uCoreHue, uCoreSat;
 uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uLSat1, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
@@ -917,7 +920,7 @@ void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float
   float bandH = 2.0 / uN;
   float sD = fract(sA * 7.31 + sB * 3.17);                         // two more fixed random numbers per person
   float sE = fract(sB * 5.73 + sC * 9.41);
-  float base = uDrop * bandH * 0.5 * (0.6 + 0.8 * sC) * (0.8 + 0.25 * amp) * life * inkGrow(age);
+  float base = uDrop * min(bandH, 1.0) * 0.5 * (0.8 + 0.4 * sC) * mix(0.5, 1.0, amp) * life * inkGrow(age);   // (amp here is the person's energy 0-1: a still person's drop is small, an active person's is big)
   float cx = max((0.10 + 0.72 * sD) * asp + 0.06 * sin(0.17 * uWT + sB * TAU), base * 1.6 + 0.12);    // anywhere across the half-screen, never reaching the mirror line
   float cy = dropCy(rank) + (sB - 0.5) * 1.1 * bandH + 0.06 * sin(0.13 * uWT + sA * TAU);       // and may wander toward the neighbouring bands
   d = pa - vec2(cx, cy);
@@ -953,14 +956,22 @@ vec2 dragP(vec2 q, float wa, float wt) {
 // The drops sit INSIDE the currents: the currents carry and bend them (so their rims are never perfect, and drift), each drop pushes the
 // ink outward so the waves wrap and crowd around its rim, and each sends out its own concentric ripples. Where drops overlap the ripples
 // add together into interference — each extra person adds new waves.
+// How far a drop is carried by the currents: fully when the water is calm, less as it gets rough, so a drop in a storm is still a drop
+// (not a sliver) while it still bends and drifts with the flow.
+vec2 dropSpace(vec2 q, vec2 pd, float wa) {
+  vec2 p0 = vec2(sqrt(q.x * q.x + 0.0016) - 0.04, q.y);
+  return p0 + (pd - p0) / (1.0 + 4.0 * wa);
+}
+
 vec3 inkAt(vec2 q, float wa, float wt) {
   vec2 pd = dragP(q, wa, wt);
+  vec2 ps = dropSpace(q, pd, wa);
   vec2 p = pd;
   float ripple = 0.0;
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
-    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, uP0[k].x, d, R, Rb);
+    dropAt(ps, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, clamp(uP2[k].x + 0.35 * uP0[k].z, 0.0, 1.0), d, R, Rb);
     float r = max(length(d), 0.0001);
     p += (sqrt(max(r * r - R * R, 0.0)) / r - 1.0) * d;             // the push: the ink is sampled from where it was before the drop pushed it aside
     float s = max(r / max(R, 0.02) - 1.0, 0.0);                      // how many drop-radii out from the rim
@@ -1015,13 +1026,13 @@ void main() {
   vec3 col = mix(light, dark, darkW * (0.72 + 0.28 * thick));
 
   // the drops themselves, seen in the same moving water: a soft ring at the rim and clear, still water inside
-  vec2 pd = dragP(q, wa, uWT);
+  vec2 pd = dropSpace(q, dragP(q, wa, uWT), wa);
   float px = pix * 1.8;
   float fillM = 0.0, ringM = 0.0, coreM = 0.0;
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
-    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, uP0[k].x, d, R, Rb);
+    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, clamp(uP2[k].x + 0.35 * uP0[k].z, 0.0, 1.0), d, R, Rb);
     float r = length(d);
     float edge = r - R;
     float fk = 1.0 - smoothstep(-px, px, edge);
@@ -1030,10 +1041,10 @@ void main() {
     ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
   }
   vec3 ringC = hsv2rgb(vec3(hueD, min(uDSat * 1.1, 1.0), max(lumD - 0.12, 0.0)));
-  vec3 inner = hsv2rgb(vec3(uDropHue / 360.0, uDropSat, 0.97));          // the drop's own color: a soft pink pool...
+  vec3 inner = hsv2rgb(vec3(mix(uDropHue, uDropHue1, mot) / 360.0, uDropSat, 0.97));          // the drop's own color: a soft pink pool...
   vec3 coreC = hsv2rgb(vec3(uCoreHue / 360.0, uCoreSat, 0.34));          // ...with the brush's deep blue ink in the middle
   ringM *= 1.0 - smoothstep(0.55, 0.95, fillM);                    // where two drops run together they become one pool: no rim inside it
-  col = mix(col, ringC, ringM * 0.8);
+  col = mix(col, ringC, ringM * 0.95);
   col = mix(col, inner, fillM);
   col = mix(col, coreC, coreM * 0.92);                             // the brush's dense ink, bleeding thinner from the rim inward
 
@@ -1080,7 +1091,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uDropHue', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uDropHue', 'uDropHue1', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -1125,7 +1136,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uDropHue, K.dropHue); gl.uniform1f(u.uDropSat, K.dropSat); gl.uniform1f(u.uCoreHue, K.dropCoreHue); gl.uniform1f(u.uCoreSat, K.dropCoreSat);
+    gl.uniform1f(u.uDropHue, K.dropHue); gl.uniform1f(u.uDropHue1, K.dropHueMoving); gl.uniform1f(u.uDropSat, K.dropSat); gl.uniform1f(u.uCoreHue, K.dropCoreHue); gl.uniform1f(u.uCoreSat, K.dropCoreSat);
     gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uLSat1, K.lightSatMoving); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4);
