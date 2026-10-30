@@ -29,6 +29,9 @@ if (typeof window.beginSession !== 'function') {
    0) MASTER TUNING CONSTANTS
    ============================= */
 const TUNE = {
+  // Run on its own: start tracking as soon as the display loads, and ignore Stop / Reset from the control page, so the water just keeps
+  // running. Set to false to go back to starting and stopping it from the control page.
+  autoRun: true,
   tracking: {
     maxPeople: 12,          // PoseNet maxPoseDetections — also the most rings there can be
     scoreThreshold: 0.4,
@@ -602,6 +605,8 @@ function setup() {
     scoreThreshold: TUNE.tracking.scoreThreshold
   }, () => console.log('🧠 PoseNet model loaded (multi-pose)'));
 
+  if (TUNE.autoRun) startTrackingImpl();   // (a function declaration further down, so it is already available here)
+
   poseNet.on('pose', results => {
     latestPoses = results || [];
     if (!trackingStarted) return;
@@ -1094,6 +1099,7 @@ function startTrackingImpl() {
 }
 
 function stopTrackingImpl() {
+  if (TUNE.autoRun) { console.log('[DISPLAY] autoRun is on — ignoring stop'); return; }
   if (!trackingStarted) return;
   trackingStarted = false;
   window.__ebTrackingStarted = false;
@@ -1108,6 +1114,7 @@ window.__ebTrackingReady = true;
 window.__ebPrintImpl = onPrintAverageThenSnapshot;
 
 function resetAll() {
+  if (TUNE.autoRun) { console.log('[DISPLAY] autoRun is on — ignoring reset'); return; }
   try { stopTrackingImpl(); } catch (e) { }
   people.clear();
   nextPersonId = 1;

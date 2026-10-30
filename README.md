@@ -73,6 +73,10 @@ Same shape as the original project:
 Control (dashboard)  <---- ws://host:8080 ---->  Display (camera + renderer)
 ```
 
+**Running on its own.** `TUNE.autoRun` (top of `js/sketch.js`, on by default) makes the display start tracking the moment it loads and ignore
+Stop / Reset from the control page, so you only need to open `display.html` — the control page isn't needed. Set it to `false` to go back to
+starting and stopping from the control page.
+
 ## Running it
 
 ```bash
