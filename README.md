@@ -123,6 +123,10 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   smooth when calm).
 - `TUNE.water.inkDensity` / `inkLayers` / `inkLine` — how many ink bands follow each wave, how many even layers fill the
   screen height (more = finer stripes), and how wide the dark band is (0.25 = half dark, half light).
+- `TUNE.water.dropSize` / `dropRing` — **one drop of ink per person**: a clear, softly oval pool with a dark ring, the ink crowding and
+  wrapping around its rim, like a drop on a tray of marbling water. Each person's drop has its own place (somewhere in their
+  band, off to one side), size and stretch, drifts slowly, and — because the picture is mirrored — has a twin on the other side,
+  like butterfly wings. The drop grows a little with movement and fades with the person. `dropSize` 0 = no drops.
 - `TUNE.water.inkTint` / `sheen` / `grain` — how much color shows through the grey (0 = pure grey), how much the waves catch soft light on the surface (0 = flat), and optional paper speckle (0 = none).
 - `TUNE.water.dragCalm` / `dragStorm` / `flowCalm` / `flowStorm` — how far the ink is dragged (and how strongly the
   whirlpools twist) when calm / in a storm, and how fast those currents drift. Lower `dragStorm` for fewer whirlpools.

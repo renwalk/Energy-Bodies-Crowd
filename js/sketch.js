@@ -66,6 +66,8 @@ const TUNE = {
     inkLayers: 26,         // even layers of ink across the whole screen height: more = finer, busier bands (even where the water is flat)
     inkTint: 0.13,         // how much color shows through the grey inks (0 = pure grey; the tint shifts blue -> rose with movement)
     grain: 0,              // optional paper speckle on the ink (0 = none: smooth, like water)
+    dropSize: 0.62,        // size of each person's circular drop of ink, as a fraction of their band's height (0 = no circles)
+    dropRing: 0.012,       // weight of the dark ring around each drop
     sheen: 0.4,            // how much the waves catch soft light and glints on the water's surface (0 = flat)
     inkLine: 0.29,          // width of the dark ink bands as a fraction of a layer (0.25 = half dark, half light)
     dragCalm: 0.09,         // how far the ink is dragged around when calm: gentle S-curves...
@@ -712,7 +714,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uContrast, uTint, uGrain, uSheen;
+uniform float uContrast, uTint, uGrain, uSheen, uDrop, uDropRing;   // drops: size (fraction of a band's height, 0 = none), ring weight
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
@@ -766,10 +768,11 @@ float heightAt(vec2 q) {
                + 0.24 * (lam / 7.2 / TAU) * sin(TAU * 7.2 * (yl * 0.91 + xl * 0.42) + uP3[k].x);
       hk += uChop * cs * ch;
     }
-    num += w * p1.w * hk;
-    den += w;
+    float wl = w * p1.w;                                          // weighted by how present the person is: a leaving band melts into its neighbours and has exactly no weight when it is removed, so nothing jumps
+    num += wl * hk;
+    den += wl;
   }
-  float h = num / max(den, 0.0001);
+  float h = num / (den + 0.2);                                    // the +0.2 lets a band fade in and out smoothly rather than being re-normalised to full height
   return uHMax * tanhf(h / uHMax);
 }
 
@@ -779,11 +782,12 @@ vec3 lookAt(float tau) {
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     float d = (tau - (uP2[k].y - 0.5) / uN) / uSig;
-    if (abs(d) > 3.2) continue;
     float w = exp(-0.5 * d * d) * (1.0 - smoothstep(2.4, 3.2, abs(d)));
-    hue += w * uP2[k].x; st += w * uP0[k].z * uP1[k].w; am += w * uP0[k].x * uP1[k].w * uSteep * (uSpan / uP0[k].y) / TAU; den += w;
+    w = (w + 0.002) * uP1[k].w;                                   // weighted by how present the person is; every band has a faint reach everywhere, so when someone leaves
+                                                                  // the part of the screen only they covered takes on the others' look smoothly instead of jumping
+    hue += w * uP2[k].x; st += w * uP0[k].z; am += w * uP0[k].x * uSteep * (uSpan / uP0[k].y) / TAU; den += w;
   }
-  return vec3(hue, st, am) / max(den, 0.0001);
+  return vec3(hue, st, am) / max(den, 0.000001);
 }
 
 vec3 hsv2rgb(vec3 c) {
@@ -796,8 +800,36 @@ float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.y
 // The ink field at q: the waves' height (normalised by wave size, so about -1..1 per wave) read AFTER the whole surface has
 // been dragged around, like a comb pulled through ink. The drag is a few layers of slow sinusoidal currents of growing
 // frequency, built from |x| so the picture stays an exact mirror. x = field, y = where up the screen this ink really is.
+// A person's drop of ink. Each has its own place (somewhere in their band, off to one side — the mirror gives it a twin), its own size
+// and a slightly irregular, slowly breathing outline, all drifting gently. The size grows a little with movement and fades with the person.
+float dropCy(float rank) { return 2.0 * (rank - 0.5) / uN - 1.0; }
+void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float amp, out vec2 d, out float R, out float Rb) {
+  float asp = uRes.x / uRes.y;
+  float bandH = 2.0 / uN;
+  float sD = fract(sA * 7.31 + sB * 3.17);                         // two more fixed random numbers per person
+  float sE = fract(sB * 5.73 + sC * 9.41);
+  float base = uDrop * bandH * 0.5 * (0.6 + 0.8 * sC) * (0.8 + 0.25 * amp) * life;
+  float cx = max((0.10 + 0.72 * sD) * asp + 0.06 * sin(0.17 * uWT + sB * TAU), base * 1.6 + 0.12);    // anywhere across the half-screen, never reaching the mirror line
+  float cy = dropCy(rank) + (sB - 0.5) * 1.1 * bandH + 0.06 * sin(0.13 * uWT + sA * TAU);       // and may wander toward the neighbouring bands
+  d = pa - vec2(cx, cy);
+  Rb = base;
+  float th = atan(d.y, d.x);
+  // not a perfect circle: a smooth oval, stretched a little in its own direction, turning very slowly
+  float e = 0.07 + 0.13 * sE;
+  R = base * (1.0 + e * cos(2.0 * (th - sB * 3.1416 - 0.06 * uWT)));
+}
+
 vec2 inkAt(vec2 q, float wa, float wt) {
-  vec2 p = vec2(sqrt(q.x * q.x + 0.0016) - 0.04, q.y);
+  vec2 p0 = vec2(sqrt(q.x * q.x + 0.0016) - 0.04, q.y);
+  vec2 p = p0;
+  // each drop pushes the ink outward, so the bands wrap and crowd around its rim (the ink is sampled from where it was before the push)
+  for (int k = 0; k < MAXW; k++) {
+    if (k >= uCount) break;
+    vec2 d; float R, Rb;
+    dropAt(vec2(sqrt(q.x * q.x + 0.0001), q.y), uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP1[k].w, uP0[k].x, d, R, Rb);   // |x| rounded only a hair, so the circle is round and the mirror line has no crease
+    float r = max(length(d), 0.0001);
+    p += (sqrt(max(r * r - R * R, 0.0)) / r - 1.0) * d;
+  }
   // whirlpools: a few slowly drifting vortices twist the ink around themselves (a calm sea barely turns, a storm winds spirals)
   for (int i = 0; i < 3; i++) {
     float fi = float(i);
@@ -847,6 +879,24 @@ void main() {
   float thick = 1.0 - clamp(d0 / max(duty, 0.02), 0.0, 1.0);                                    // 1 in the middle of a band, 0 at its edge
   vec3 col = mix(light, dark, darkW * (0.72 + 0.28 * thick));
 
+  // the drops themselves: a dark ring at the rim and clear water inside
+  vec2 pa = vec2(sqrt(q.x * q.x + 0.0001), q.y);
+  float px = pix * 1.1;
+  float fillM = 0.0, ringM = 0.0;
+  for (int k = 0; k < MAXW; k++) {
+    if (k >= uCount) break;
+    vec2 d; float R, Rb;
+    dropAt(pa, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP1[k].w, uP0[k].x, d, R, Rb);
+    float r = length(d);
+    float edge = r - R;
+    fillM = max(fillM, 1.0 - smoothstep(-px, px, edge));
+    ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
+  }
+  vec3 ringC = hsv2rgb(vec3(hue, uTint * 1.4, max(lumD - 0.18, 0.0)));
+  vec3 inner = hsv2rgb(vec3(hue, uTint * 0.4, min(lumL + 0.05, 1.0)));
+  col = mix(col, ringC, ringM);
+  col = mix(col, inner, fillM);
+
   // the water's surface: the waves tilt it, so it catches soft light and the odd glint, like the window reflected in a tray of water
   vec3 n = normalize(vec3(-g.x * 0.12, -g.y * 0.12, 1.0));
   float tilt = dot(n, normalize(vec3(0.0, 0.6, 0.8)));
@@ -888,7 +938,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uSheen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -911,7 +961,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -973,6 +1023,8 @@ function drawCrowdWater(now) {
     W.p1[o] = d.wC.v / wsum; W.p1[o + 1] = d.wS.v / wsum; W.p1[o + 2] = d.wT.v / wsum; W.p1[o + 3] = life;
     W.p2[o] = hue; W.p2[o + 1] = d.rank.v; W.p2[o + 2] = p.chopPh[0]; W.p2[o + 3] = p.chopPh[1];
     W.p3[o] = p.chopPh[2];
+    const hs = n => { const x = Math.sin((n + 1) * 12.9898 + p.id * 78.233) * 43758.5453; return x - Math.floor(x); };   // this person's own, fixed random numbers: where their drop sits, how big, what shape
+    W.p3[o + 1] = hs(1); W.p3[o + 2] = hs(2); W.p3[o + 3] = hs(3);
   });
 
   // The ink's drag currents drift forward at a pace set by the crowd's average storm — phase only ever advances, so a change of pace never jumps
