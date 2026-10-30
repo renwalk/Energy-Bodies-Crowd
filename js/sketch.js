@@ -40,7 +40,7 @@ const TUNE = {
   },
   point: {
     kpMinScore: 0.4,      // ignore keypoints PoseNet isn't confident about
-    posSmoothing: 0.22,   // how quickly a point's tracked position catches up to the raw detection (lower = smoother, more lag)
+    posSmoothing: 0.02,   // how quickly a point's tracked position catches up to the raw detection (lower = smoother, more lag)
     velEMA: 0.18,          // smoothing on each point's own velocity reading (lower = smoother, more lag)
     velDeadzone: 0.0025,  // raw per-frame velocity below this is treated as 0 — absorbs PoseNet's baseline detection jitter on a still body
     velNormMin: 0.0,      // velocity (normalized by video diagonal per frame) that reads as "still"
@@ -51,7 +51,9 @@ const TUNE = {
   water: {
     // --- the water: a flowing texture filling the screen. Each person owns a horizontal band of it. ---
     resolution: 0.75,       // GPU render size relative to the screen (1 = full; lower is faster and a little softer)
-    speed: .2,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
+    maxPixels: 800000,      // never render more than this many pixels, however big the screen (the cost grows with pixels; a big display at 0.75 can be several million)
+    autoQuality: true,      // if the display can't keep up (under ~45 fps for a few seconds) it lowers its own render size until it can, so the motion stays fluid
+    speed: .02,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
     contrast: 0.55,         // MASTER CONTRAST: how far apart the dark and light inks are (0 = nearly the same, 0.55 = soft, translucent ink on water, 1.6 = deep charcoal on near-white). Live: - and =
     bandOverlap: 0.9,       // how softly one person's band blends into the next (bigger = wider blend)
     steepness: 0.6,         // how steep a full-size wave is (slope: height / half-wavelength). Higher = rougher, brighter caustics
@@ -61,7 +63,7 @@ const TUNE = {
     glow: 1.0,              // brightness of the caustic webs
     texture: 0.1,          // fine ripple texture that is always present, even in glassy-calm water (0 = perfectly smooth)
     // --- how a wave responds to its person: calm = smooth rolling swell, storm = steep, choppy, fast ---
-    ampCalm: 0.85, ampSwell: 1.25, stormAmpBoost: 0.5,     // wave height: still / vigorous / extra in a storm
+    ampCalm: 1, ampSwell: 1.25, stormAmpBoost: 0.5,     // wave height: still / vigorous / extra in a storm
     freqCalm: 0.10, freqSwell: 0.30, stormFreqBoost: 0.35, // how often a crest passes (per second): still / vigorous / extra in a storm
     crestsPerPoint: 0.55,   // waves up the screen per tracked body point (a full body of 17 points = 5 across the screen, 11 points = 3)
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
@@ -75,6 +77,8 @@ const TUNE = {
     dropSize: 0.62,        // size of each person's circular drop of ink, as a fraction of their band's height (0 = no circles)
     ripples: 1.0,          // how strongly each drop sends out its own concentric waves (0 = none; they overlap and interfere between drops)
     rippleReach: 1.0,      // how far those ripples reach, in drop-radii
+    dropHue: 330, dropSat: 0.15,           // color of the pool inside each drop (hue degrees: 335 = pink, 215 = blue) and how strong it is
+    dropCoreHue: 228, dropCoreSat: 0.80,   // color of the dense ink at the drop's heart as it first touches down
     dropRing: 0.009,       // weight of the dark ring around each drop
     sheen: 0.4,            // how much the waves catch soft light and glints on the water's surface (0 = flat)
     inkLine: 0.29,          // width of the dark ink bands as a fraction of a layer (0.25 = half dark, half light)
@@ -91,8 +95,8 @@ const TUNE = {
     burstFull: 0.25,        // size of a sudden burst of speed that counts as a full storm
     jerkFull: 0.9,          // how erratically the speed changes (0-1) that counts as fully abrupt
     stormSustainedWeight: 0.4, stormJerkWeight: 0.6, stormBurstWeight: 0.6, // how much each of the three contributes (capped at 1 together)
-    stormAttack: 0.12,      // per pose event: how fast the storm reading builds (quick, so abrupt movement hits hard)...
-    stormRelease: 0.02,     // ...and how slowly it dies away (slow, so the sea settles gently)
+    stormAttack: 0.06,      // per pose event: how fast the storm reading builds (quick, so abrupt movement hits hard)...
+    stormRelease: 0.015,     // ...and how slowly it dies away (slow, so the sea settles gently)
     // --- body shape -> wave profile: asymmetrical = pointed, else rigid/upright = flat-topped, else soft/relaxed = rounded. These
     //     are the centers of smooth transitions, not hard switches — a body between two shapes gets a blend of both. ---
     asymThreshold: 0.5,     // asymmetry score (0 = perfect mirror, 1 = very lopsided) at which the wave is half-way to pointed
@@ -103,21 +107,21 @@ const TUNE = {
     spineFullDeg: 25,       // spine (or head-over-shoulders) tilt from vertical that counts as fully un-upright
     shoulderFullDeg: 15,    // shoulder-line tilt that counts as fully un-level
     bentDeg: 100, straightDeg: 175, // elbow/knee angle that counts as fully bent (0) and fully straight (1)
-    postureSmoothing: 0.06, // per pose event: posture is read slowly, so a passing gesture doesn't change the wave
+    postureSmoothing: 0.04, // per pose event: posture is read slowly, so a passing gesture doesn't change the wave
     // --- how many crests: the number of tracked body points ---
     reflectionsFrom: 'bodyPoints', // 'bodyPoints': that person's number of tracked body points, rounded up to even
                                    // 'people':     one per person detected instead
     // --- movement -> color (hue in degrees: 215 = blue, 270 = violet, 320 = rose/magenta, 360 = red) ---
     motionFullMean: 0.3,    // mean keypoint activation that reads as "fully in motion"
     // --- calm, flowing motion: everything below trades responsiveness for smoothness ---
-    motionAttack: 0.12,     // per pose event: how fast the movement reading rises when someone starts moving...
-    motionRelease: 0.04,    // ...and how slowly it falls when they stop, so color and waves settle gently instead of snapping back
-    countDebounceMs: 1200,  // a new crest count must hold this long before the water starts changing to it
+    motionAttack: 0.06,     // per pose event: how fast the movement reading rises when someone starts moving...
+    motionRelease: 0.02,    // ...and how slowly it falls when they stop, so color and waves settle gently instead of snapping back
+    countDebounceMs: 2500,  // a new crest count must hold this long before the water starts changing to it
     fadeInMs: 1200,         // how slowly a newly detected person's wave builds
     // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer. "Up" is
     // growing/speeding up, "Down" is settling; a storm builds fast and dies slowly.
-    smooth: { rank: 2.4, crowd: 2.4, motion: 2.2, form: 2.2, count: 2.2,
-              ampUp: 1.8, ampDown: 3.0, freqUp: 2.0, freqDown: 3.0, stormUp: 1.6, stormDown: 4.0, dropUp: 0.2, dropDown: 0.5 }
+    smooth: { rank: 3.0, crowd: 3.0, motion: 3.5, form: 3.5, count: 4.0,
+              ampUp: 3.0, ampDown: 4.0, freqUp: 3.0, freqDown: 4.0, stormUp: 3.0, stormDown: 5.0, dropUp: 0.2, dropDown: 0.5 }
   }
 };
 
@@ -633,16 +637,40 @@ function draw() {
   text(`people: ${people.size} | tracking: ${trackingStarted}`, 12, 20);
   if (window.__ebSession?.active) text(`Recording: ${window.__ebSession.samples} samples`, 12, 40);
   text(`[${displayOrientation}]`, 12, 60);
+  if (debugOn) drawDebug();
   if (millis() < dialShownUntil) {   // brief readout after adjusting speed / contrast
     const K = TUNE.water;
     text(`speed ${K.speed.toFixed(1)}   contrast ${K.contrast.toFixed(1)}      ( , .  speed    - =  contrast )`, 12, height - 16);
   }
 }
 
+// Diagnostic readout (press d): frame rate and the worst frame in the last second (a stutter reads as flicker), how many people exist and how
+// many ids have been created (if that number keeps climbing, the tracker keeps losing and re-finding people — each re-find replays the ink touch),
+// and each person's live readings.
+let debugOn = false, dbgFrames = [], dbgWorst = 0, dbgWorstAt = 0;
+function drawDebug() {
+  const now = millis();
+  dbgFrames.push([now, deltaTime]);
+  while (dbgFrames.length && now - dbgFrames[0][0] > 1000) dbgFrames.shift();
+  const worst = Math.max(...dbgFrames.map(f => f[1]));
+  if (worst > dbgWorst || now - dbgWorstAt > 5000) { dbgWorst = worst; dbgWorstAt = now; }
+  const lines = [
+    `fps ${Math.round(frameRate())}   worst frame (1s) ${Math.round(worst)} ms   worst (5s) ${Math.round(dbgWorst)} ms   render ${WaterGL.w}x${WaterGL.h} (quality ${WaterGL.quality.toFixed(2)})`,
+    `people ${people.size}   ids created ${nextPersonId - 1}   poses this frame ${latestPoses.length}`
+  ];
+  for (const p of Array.from(people.values()).sort((a, b) => a.id - b.id)) {
+    lines.push(`#${p.id}  points ${p.m.bodyPoints}  motion ${p.m.motion.toFixed(2)}  storm ${p.m.storm.toFixed(2)}  amp ${p.d.amp.v.toFixed(2)}  waves ${p.d.count.v.toFixed(1)}  age ${(p.inkAge || 0).toFixed(1)}s`);
+  }
+  push(); noStroke(); fill(0, 150); rect(8, 76, 640, 18 * lines.length + 10); fill(255); textSize(12);
+  lines.forEach((l, i) => text(l, 14, 94 + 18 * i));
+  pop();
+}
+
 // Live dials: , and . slow down / speed up everything; - and = soften / strengthen the ink contrast.
 let dialShownUntil = 0;
 function keyPressed() {
   const K = TUNE.water;
+  if (key === 'd' || key === 'D') { debugOn = !debugOn; return; }
   const step = (v, d, lo, hi) => Math.round(constrain(v + d, lo, hi) * 10) / 10;
   if (key === ',' || key === '<') K.speed = step(K.speed, -0.1, 0.1, 3);
   else if (key === '.' || key === '>') K.speed = step(K.speed, 0.1, 0.1, 3);
@@ -722,6 +750,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
+uniform float uDropHue, uDropSat, uCoreHue, uCoreSat;
 uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uLSat1, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
@@ -928,15 +957,16 @@ void main() {
     float edge = r - R;
     float fk = 1.0 - smoothstep(-px, px, edge);
     fillM = max(fillM, fk);
-    coreM = max(coreM, fk * exp(-uP4[k].y / 2.6) * (1.0 - 0.55 * clamp(r / max(R, 0.02), 0.0, 1.0)));   // the brush's dense ink, bleeding thinner from the rim inward
+    coreM = max(coreM, fk * max(exp(-uP4[k].y / 2.6), 0.14) * (1.0 - 0.55 * clamp(r / max(R, 0.02), 0.0, 1.0)));   // (a faint blue wash stays at the heart)   // the brush's dense ink, bleeding thinner from the rim inward
     ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
   }
   vec3 ringC = hsv2rgb(vec3(hueD, min(uDSat * 1.1, 1.0), max(lumD - 0.12, 0.0)));
-  vec3 inner = hsv2rgb(vec3(hueL, mix(uLSat, uLSat1, mot) * 0.6, min(lumL + 0.05, 1.0)));
+  vec3 inner = hsv2rgb(vec3(uDropHue / 360.0, uDropSat, 0.97));          // the drop's own color: a soft pink pool...
+  vec3 coreC = hsv2rgb(vec3(uCoreHue / 360.0, uCoreSat, 0.34));          // ...with the brush's deep blue ink in the middle
   ringM *= 1.0 - smoothstep(0.55, 0.95, fillM);                    // where two drops run together they become one pool: no rim inside it
   col = mix(col, ringC, ringM * 0.8);
   col = mix(col, inner, fillM);
-  col = mix(col, ringC * 0.45, coreM * 0.9);                       // the brush's dense, near-black ink
+  col = mix(col, coreC, coreM * 0.92);                             // the brush's dense ink, bleeding thinner from the rim inward
 
   // the water's surface: the waves tilt it, so it catches soft light and the odd glint, like the window reflected in a tray of water
   vec3 n = normalize(vec3(-g.x * 0.12, -g.y * 0.12, 1.0));
@@ -951,6 +981,7 @@ void main() {
 }`;
 
 const WaterGL = {
+  quality: 1, qAcc: 0, qN: 0, qWarm: 0,
   tried: false, ok: false, canvas: null, gl: null, prog: null, u: {}, w: 0, h: 0, error: '',
   p0: new Float32Array(MAX_WAVES * 4), p1: new Float32Array(MAX_WAVES * 4), p2: new Float32Array(MAX_WAVES * 4), p3: new Float32Array(MAX_WAVES * 4), p4: new Float32Array(MAX_WAVES * 4),
 
@@ -980,7 +1011,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uDropHue', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -991,11 +1022,26 @@ const WaterGL = {
     return this.ok;
   },
 
+  // Watches the real frame rate and, if it stays low, steps the render size down (and never back up, so it can't flip-flop). Frames right after
+  // a change, and the first seconds while the camera and PoseNet model are loading, are ignored.
+  adapt(ms) {
+    if (!TUNE.water.autoQuality || millis() < 5000) return;
+    if (this.qWarm > 0) { this.qWarm--; return; }
+    this.qAcc += ms; this.qN++;
+    if (this.qN < 90) return;
+    const avg = this.qAcc / this.qN;
+    this.qAcc = 0; this.qN = 0;
+    if (avg > 22 && this.quality > 0.35) { this.quality = Math.max(0.35, this.quality * 0.82); this.qWarm = 45; console.log('[WATER] running slow (' + Math.round(1000 / avg) + ' fps): render quality now ' + this.quality.toFixed(2)); }
+  },
+
   // Renders the water for this frame into the p5 canvas.
   render(f) {
     if (!this.init()) return false;
     const K = TUNE.water, gl = this.gl, u = this.u;
-    const w = Math.max(64, Math.round(width * K.resolution / 2) * 2), h = Math.max(64, Math.round(height * K.resolution / 2) * 2);
+    let sc = K.resolution * this.quality;
+    let w = width * sc, h = height * sc;
+    if (w * h > K.maxPixels) { const k = Math.sqrt(K.maxPixels / (w * h)); w *= k; h *= k; }
+    w = Math.max(64, Math.round(w / 2) * 2); h = Math.max(64, Math.round(h / 2) * 2);
     if (w !== this.w || h !== this.h) { this.canvas.width = this.w = w; this.canvas.height = this.h = h; }
     gl.viewport(0, 0, w, h);
     gl.uniform2f(u.uRes, w, h);
@@ -1003,6 +1049,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
+    gl.uniform1f(u.uDropHue, K.dropHue); gl.uniform1f(u.uDropSat, K.dropSat); gl.uniform1f(u.uCoreHue, K.dropCoreHue); gl.uniform1f(u.uCoreSat, K.dropCoreSat);
     gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uLSat1, K.lightSatMoving); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4);
@@ -1013,13 +1060,18 @@ const WaterGL = {
 };
 
 let inkDragPhase = 0;
+let frameDt = 1 / 60;
 function drawCrowdWater(now) {
   const K = TUNE.water, T = K.smooth;
   // First person = the band nearest the viewer. A new person only gets a wave once their tracking has settled (a few
   // pose events) — before that their measurements are just placeholders.
   const list = Array.from(people.values()).filter(p => p.poseEvents >= 5).sort((a, b) => a.id - b.id).slice(0, MAX_WAVES);
   if (!list.length) return;
-  const dt = Math.min(0.1, (typeof deltaTime === 'number' ? deltaTime : 16.7) / 1000); // seconds; capped so a stalled tab doesn't leap
+  // Frame time, smoothed: when PoseNet briefly hogs the GPU and a frame arrives late, the water carries on at an even pace instead of lurching
+  // to catch up (a late frame is spread over the next several).
+  const dtRaw = Math.min(0.1, (typeof deltaTime === 'number' ? deltaTime : 16.7) / 1000);
+  frameDt += (dtRaw - frameDt) * 0.08;
+  const dt = Math.max(0.004, Math.min(0.04, frameDt));
   const timeS = now / 1000;
 
   if (crowdInit) crowdS.update(list.length, T.crowd, dt); else { crowdS.snap(list.length); crowdInit = true; }
@@ -1077,6 +1129,7 @@ function drawCrowdWater(now) {
   const stAvg = list.reduce((a, p) => a + p.d.storm.v, 0) / list.length;
   inkDragPhase += lerp(K.flowCalm, K.flowStorm, stAvg) * dt * K.speed;
 
+  W.adapt(typeof deltaTime === 'number' ? deltaTime : 16.7);
   const ok = W.render({ count: list.length, N, sig: K.bandOverlap * 0.5 / N, wt: inkDragPhase });
   if (!ok) { // no WebGL: say so on screen rather than showing nothing
     drawingContext.save(); drawingContext.fillStyle = '#fff'; drawingContext.font = '16px sans-serif';

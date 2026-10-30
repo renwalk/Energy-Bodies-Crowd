@@ -117,6 +117,13 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   how far apart the dark and light inks are (default 0.55 = soft, translucent; up to 1.6 = deep charcoal on near-white). **Both can be changed live on the display machine:** press `,` / `.` for slower /
   faster and `-` / `=` for softer / bolder contrast — a small readout appears for a couple of seconds. Live changes
   last until reload, so copy the value you like into `TUNE.water`.
+- `TUNE.water.maxPixels` / `autoQuality` — **keeping it fluid on a big screen.** The picture's cost grows with the number of pixels, and PoseNet shares
+  the GPU, so a large display can stutter. The renderer never draws more than `maxPixels` (default 800,000) however big the screen, and with
+  `autoQuality` on, if the real frame rate stays under about 45 fps for a few seconds it steps its own render size down until it can keep up (it
+  never steps back up, so it can't flip-flop). Press `d` to see the current render size and quality. Raise `maxPixels` on a strong GPU for crisper
+  lines.
+- `TUNE.water.dropHue` / `dropSat` / `dropCoreHue` / `dropCoreSat` — the colors inside each drop: a pale pool (default soft pink) with the brush's deep
+  blue ink at its heart as it touches down, bleeding thinner over a few seconds but leaving a faint blue wash.
 - `TUNE.water.resolution` — GPU render size relative to the screen (0.75 default). The biggest performance lever.
 - `TUNE.water.steepness` — how steep a full-size wave is. The main "how rough can it get" dial: higher = rougher,
   brighter caustics. Water stays believable below about 1.
