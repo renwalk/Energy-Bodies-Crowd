@@ -64,7 +64,10 @@ const TUNE = {
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
     inkDensity: 1.1,        // ink layers (contour lines) per wave height: more = finer, busier lines
     inkLayers: 26,         // even layers of ink across the whole screen height: more = finer, busier bands (even where the water is flat)
-    inkTint: 0.13,         // how much color shows through the grey inks (0 = pure grey; the tint shifts blue -> rose with movement)
+    // --- the two inks: dark = blue, light = pink. Each has its own hue (degrees: 0 red, 215 blue, 270 violet, 320 rose, 340 pink) and strength.
+    //     Movement slides each ink from its "still" hue to its "moving" hue. Set a still and moving hue equal for a fixed color.
+    darkHueStill: 215, darkHueMoving: 265, darkSat: 0.55,   // dark ink: blue when still, toward violet when moving
+    lightHueStill: 330, lightHueMoving: 345, lightSat: 0.30, // light ink: pink when still, warmer pink when moving
     grain: 0,              // optional paper speckle on the ink (0 = none: smooth, like water)
     dropSize: 0.62,        // size of each person's circular drop of ink, as a fraction of their band's height (0 = no circles)
     ripples: 1.0,          // how strongly each drop sends out its own concentric waves (0 = none; they overlap and interfere between drops)
@@ -103,8 +106,6 @@ const TUNE = {
                                    // 'people':     one per person detected instead
     // --- movement -> color (hue in degrees: 215 = blue, 270 = violet, 320 = rose/magenta, 360 = red) ---
     motionFullMean: 0.3,    // mean keypoint activation that reads as "fully in motion"
-    hueStill: 215, hueMoving: 320, // (full red, 360, makes water look like flesh — rose/magenta keeps the warm shift but still reads as water)
-    saturation: 80, brightness: 95,
     // --- calm, flowing motion: everything below trades responsiveness for smoothness ---
     motionAttack: 0.12,     // per pose event: how fast the movement reading rises when someone starts moving...
     motionRelease: 0.04,    // ...and how slowly it falls when they stop, so color and waves settle gently instead of snapping back
@@ -716,7 +717,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uContrast, uTint, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
+uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
@@ -882,7 +883,9 @@ void main() {
                  (fyp.x - fym.x) * uDens + (fyp.y - fym.y) * uLayers + (fyp.z - fym.z)) / (2.0 * e);
 
   vec3 lk = lookAt(f0.y);
-  float hue = lk.x;
+  float mot = lk.x;                                                // how much movement there is here (0 = still, 1 = moving): slides both inks along their blue -> pink ranges
+  float hueD = mix(uDH0, uDH1, mot) / 360.0;
+  float hueL = mix(uLH0, uLH1, mot) / 360.0;
 
   float u = f0.x * uDens + f0.y * uLayers + f0.z;
   float aa = clamp(length(gu) * pix * 0.8, 0.05, 0.35);            // never sharp: ink spreads softly into the water
@@ -890,11 +893,11 @@ void main() {
   float d0 = min(s0, 1.0 - s0);                                    // distance (in layers) to the nearest whole layer
 
   // ink floating on water: a translucent dark ink over a pale light one, thickest in the middle of each band and thinning
-  // softly to its edges. uContrast sets how far apart the two tones are; uTint lets a little of the stillness->motion color show.
+  // softly to its edges. uContrast sets how far apart the two tones are; each ink has its own color.
   float lumD = clamp(0.62 - 0.26 * uContrast, 0.0, 1.0);
   float lumL = clamp(0.66 + 0.20 * uContrast, 0.0, 1.0);
-  vec3 dark  = hsv2rgb(vec3(hue, uTint * 1.3, lumD));
-  vec3 light = hsv2rgb(vec3(hue, uTint * 0.55, lumL));
+  vec3 dark  = hsv2rgb(vec3(hueD, uDSat, lumD));                  // the dark ink: blue
+  vec3 light = hsv2rgb(vec3(hueL, uLSat, lumL));                  // the light ink: pink
   float duty = uLine * (0.8 + 0.3 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // ink band width, varying a little so it isn't mechanical
   float darkW = 1.0 - smoothstep(duty - aa, duty + aa, d0);
   float thick = 1.0 - clamp(d0 / max(duty, 0.02), 0.0, 1.0);                                    // 1 in the middle of a band, 0 at its edge
@@ -914,8 +917,8 @@ void main() {
     fillM = max(fillM, fk);
     ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
   }
-  vec3 ringC = hsv2rgb(vec3(hue, uTint * 1.4, max(lumD - 0.12, 0.0)));
-  vec3 inner = hsv2rgb(vec3(hue, uTint * 0.4, min(lumL + 0.05, 1.0)));
+  vec3 ringC = hsv2rgb(vec3(hueD, min(uDSat * 1.1, 1.0), max(lumD - 0.12, 0.0)));
+  vec3 inner = hsv2rgb(vec3(hueL, uLSat * 0.6, min(lumL + 0.05, 1.0)));
   ringM *= 1.0 - smoothstep(0.55, 0.95, fillM);                    // where two drops run together they become one pool: no rim inside it
   col = mix(col, ringC, ringM * 0.8);
   col = mix(col, inner, fillM);
@@ -962,7 +965,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -985,7 +988,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1042,7 +1045,7 @@ function drawCrowdWater(now) {
     for (let j = 0; j < 3; j++) p.chopPh[j] += WTAU * CHOP_RATE[j] * (0.3 + 0.7 * st) * dt * K.speed;
 
     const wsum = (d.wC.v + d.wS.v + d.wT.v) || 1;
-    const hue = lerp(K.hueStill, K.hueMoving, d.motion.v) / 360;
+    const hue = d.motion.v;                                           // (the shader turns movement into the two inks' colors)
     const o = i * 4;
     W.p0[o] = d.amp.v; W.p0[o + 1] = constrain(d.count.v * K.crestsPerPoint * (1 + K.stormCrestBoost * st), 1.5, 20); W.p0[o + 2] = st; W.p0[o + 3] = p.phase;
     W.p1[o] = d.wC.v / wsum; W.p1[o + 1] = d.wS.v / wsum; W.p1[o + 2] = d.wT.v / wsum; W.p1[o + 3] = life;
