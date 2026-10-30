@@ -129,6 +129,10 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   `autoQuality` on, if the real frame rate stays under about 45 fps for a few seconds it steps its own render size down until it can keep up (it
   never steps back up, so it can't flip-flop). Press `d` to see the current render size and quality. Raise `maxPixels` on a strong GPU for crisper
   lines.
+- `TUNE.water.halo` / `haloReach` — **each drop colors the water around it**, not just itself: the ink right at a drop's rim takes on that drop's color
+  (rose around a pink pool, blue around a blue one), easing back to the ordinary blue-and-white with distance, with the hue drifting ring by ring so
+  the ripples themselves change color. Where drops are close together their halos overlap. `halo` 0 = only the drop's own pool changes color;
+  `haloReach` is how far the color spreads (in drop radii).
 - `TUNE.water.dropHue` / `dropSat` / `dropCoreHue` / `dropCoreSat` — the colors inside each drop: a pale pool (default soft pink) with the brush's deep
   blue ink at its heart as it touches down, bleeding thinner over a few seconds but leaving a faint blue wash.
 - `TUNE.water.resolution` — GPU render size relative to the screen (0.75 default). The biggest performance lever.

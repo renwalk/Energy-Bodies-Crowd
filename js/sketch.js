@@ -88,6 +88,8 @@ const TUNE = {
     rippleReach: 1.0,      // how far those ripples reach, in drop-radii
     dropHue: 330, dropHueMoving: 205, dropSat: 0.24,   // color of the pool inside each drop (hue degrees: 330 = pink, 205 = pale blue) when the water is calm and when it's moving — it shifts so the drop always stands out from the ink around it — and how strong it is
     dropCoreHue: 228, dropCoreSat: 0.80,   // color of the dense ink at the drop's heart as it first touches down
+    halo: 0.9,             // how strongly each drop colors the ink around it (0 = only the drop itself changes color, 1 = the ink right at its rim takes on its color fully)
+    haloReach: 2.5,        // how far that color spreads, in drop-radii from the rim (the ripples take on the color and fade back to blue and white with distance)
     dropRing: 0.014,       // weight of the dark ring around each drop
     sheen: 0.4,            // how much the waves catch soft light and glints on the water's surface (0 = flat)
     inkLine: 0.29,          // width of the dark ink bands as a fraction of a layer (0.25 = half dark, half light)
@@ -822,6 +824,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
+uniform float uHalo, uHaloReach;
 uniform float uDropHue, uDropHue1, uDropSat, uCoreHue, uCoreSat;
 uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uLSat1, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
@@ -1018,17 +1021,11 @@ void main() {
   // softly to its edges. uContrast sets how far apart the two tones are; each ink has its own color.
   float lumD = clamp(0.62 - 0.26 * uContrast, 0.0, 1.0);
   float lumL = clamp(0.80 + 0.20 * uContrast, 0.0, 1.0);
-  vec3 dark  = hsv2rgb(vec3(hueD, uDSat, lumD));                  // the dark ink: blue
-  vec3 light = hsv2rgb(vec3(hueL, mix(uLSat, uLSat1, mot), lumL)); // the light ink: white, warming to pink as people move
-  float duty = uLine * (0.8 + 0.3 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // ink band width, varying a little so it isn't mechanical
-  float darkW = 1.0 - smoothstep(duty - aa, duty + aa, d0);
-  float thick = 1.0 - clamp(d0 / max(duty, 0.02), 0.0, 1.0);                                    // 1 in the middle of a band, 0 at its edge
-  vec3 col = mix(light, dark, darkW * (0.72 + 0.28 * thick));
 
-  // the drops themselves, seen in the same moving water: a soft ring at the rim and clear, still water inside
+  // where the drops are, seen in the same moving water; and how strongly each one colors the water around it
   vec2 pd = dropSpace(q, dragP(q, wa, uWT), wa);
   float px = pix * 1.8;
-  float fillM = 0.0, ringM = 0.0, coreM = 0.0;
+  float fillM = 0.0, ringM = 0.0, coreM = 0.0, halo = 0.0, haloS = 0.0;
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
@@ -1039,9 +1036,27 @@ void main() {
     fillM = max(fillM, fk);
     coreM = max(coreM, fk * max(exp(-uP4[k].y / 2.6), 0.14) * (1.0 - 0.55 * clamp(r / max(R, 0.02), 0.0, 1.0)));   // (a faint blue wash stays at the heart)   // the brush's dense ink, bleeding thinner from the rim inward
     ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
+    float s = max(r / max(R, 0.02) - 1.0, 0.0);                    // drop-radii out from the rim
+    float hk = exp(-s / uHaloReach) * uP4[k].x * smoothstep(0.0, 1.2, uP4[k].y);   // (the color spreads out with the drop as it touches down)
+    if (hk > halo) { halo = hk; haloS = s; }
   }
+
+  // The drops color the water around them: the ink near a drop takes on that drop's color — strongest at the rim — and eases back to the
+  // ordinary blue-and-white with distance, with the hue drifting a little ring by ring, so the ripples themselves change color.
+  float poolHue = mix(uDropHue, uDropHue1, mot) / 360.0;
+  float ringHue = poolHue + 0.07 * sin(TAU * 0.55 * haloS - 0.4 * uWT);
+  float hz = halo * uHalo;
+  vec3 dark  = hsv2rgb(vec3(hueD, uDSat, lumD));                                           // the dark ink: blue...
+  vec3 light = hsv2rgb(vec3(hueL, mix(uLSat, uLSat1, mot), lumL));                          // ...the light ink: white, warming to pink as people move
+  dark  = mix(dark,  hsv2rgb(vec3(ringHue, 0.62, lumD + 0.08)), hz);                        // near a drop the dark ink becomes the drop's color, deeper
+  light = mix(light, hsv2rgb(vec3(ringHue, 0.30, 0.99)),       hz * 0.85);                  // and the light ink is tinted with it
+  float duty = uLine * (0.8 + 0.3 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // ink band width, varying a little so it isn't mechanical
+  float darkW = 1.0 - smoothstep(duty - aa, duty + aa, d0);
+  float thick = 1.0 - clamp(d0 / max(duty, 0.02), 0.0, 1.0);                                    // 1 in the middle of a band, 0 at its edge
+  vec3 col = mix(light, dark, darkW * (0.72 + 0.28 * thick));
+
   vec3 ringC = hsv2rgb(vec3(hueD, min(uDSat * 1.1, 1.0), max(lumD - 0.12, 0.0)));
-  vec3 inner = hsv2rgb(vec3(mix(uDropHue, uDropHue1, mot) / 360.0, uDropSat, 0.97));          // the drop's own color: a soft pink pool...
+  vec3 inner = hsv2rgb(vec3(poolHue, uDropSat, 0.97));                                          // the drop's own color: a soft pink pool...
   vec3 coreC = hsv2rgb(vec3(uCoreHue / 360.0, uCoreSat, 0.34));          // ...with the brush's deep blue ink in the middle
   ringM *= 1.0 - smoothstep(0.55, 0.95, fillM);                    // where two drops run together they become one pool: no rim inside it
   col = mix(col, ringC, ringM * 0.95);
@@ -1091,7 +1106,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uDropHue', 'uDropHue1', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uHalo', 'uHaloReach', 'uDropHue', 'uDropHue1', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -1136,7 +1151,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uDropHue, K.dropHue); gl.uniform1f(u.uDropHue1, K.dropHueMoving); gl.uniform1f(u.uDropSat, K.dropSat); gl.uniform1f(u.uCoreHue, K.dropCoreHue); gl.uniform1f(u.uCoreSat, K.dropCoreSat);
+    gl.uniform1f(u.uHalo, K.halo); gl.uniform1f(u.uHaloReach, K.haloReach); gl.uniform1f(u.uDropHue, K.dropHue); gl.uniform1f(u.uDropHue1, K.dropHueMoving); gl.uniform1f(u.uDropSat, K.dropSat); gl.uniform1f(u.uCoreHue, K.dropCoreHue); gl.uniform1f(u.uCoreSat, K.dropCoreSat);
     gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uLSat1, K.lightSatMoving); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4);
