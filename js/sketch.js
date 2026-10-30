@@ -48,6 +48,8 @@ const TUNE = {
   water: {
     // --- the water: a flowing texture filling the screen. Each person owns a horizontal band of it. ---
     resolution: 0.75,       // GPU render size relative to the screen (1 = full; lower is faster and a little softer)
+    speed: 1.0,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
+    contrast: 1.0,          // MASTER CONTRAST: 1 = as designed; lower = softer, inky lines fade toward the paper; higher = heavier black lines, brighter whites. Live: - and =
     bandOverlap: 0.9,       // how softly one person's band blends into the next (bigger = wider blend)
     steepness: 0.6,         // how steep a full-size wave is (slope: height / half-wavelength). Higher = rougher, brighter caustics
     hMax: 1.5,              // soft ceiling on wave height, so even a violent storm stays sane
@@ -61,13 +63,13 @@ const TUNE = {
     crestsPerPoint: 0.55,   // waves up the screen per tracked body point (a full body of 17 points = 5 across the screen, 11 points = 3)
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
     inkDensity: 1.5,        // ink layers (contour lines) per wave height: more = finer, busier lines
-    inkLayers: 13,          // even layers of ink across the whole screen height (wavy lines even where the water is flat)
+    inkLayers: 7,          // even layers of ink across the whole screen height (wavy lines even where the water is flat)
     inkLine: 0.15,          // weight of the black lines (fraction of a layer)
     dragCalm: 0.06,         // how far the ink is dragged around when calm: gentle S-curves...
-    dragStorm: 0.22,        // ...and in a full storm: folds and whirlpools
+    dragStorm: 0.12,        // ...and in a full storm: folds and whirlpools
     flowCalm: 0.12, flowStorm: 0.4,  // how fast the drag currents drift (radians per second) when calm / in a storm
     chop: 1.0,              // slope of the crossing chop waves that roughen the surface, at full storm
-    crestSharpen: 0.6,      // how much a storm sharpens crests and widens troughs
+    crestSharpen: 0.2,      // how much a storm sharpens crests and widens troughs
     gust: 0.25,             // how much a storm makes the waves surge and stall instead of rolling steadily
     curve: 0.5,             // how much wave crests bow toward the sides of the screen
     crossSwell: 0.15,       // slope of a gentle, slower second swell, so even calm water isn't perfectly regular
@@ -618,6 +620,23 @@ function draw() {
   text(`people: ${people.size} | tracking: ${trackingStarted}`, 12, 20);
   if (window.__ebSession?.active) text(`Recording: ${window.__ebSession.samples} samples`, 12, 40);
   text(`[${displayOrientation}]`, 12, 60);
+  if (millis() < dialShownUntil) {   // brief readout after adjusting speed / contrast
+    const K = TUNE.water;
+    text(`speed ${K.speed.toFixed(1)}   contrast ${K.contrast.toFixed(1)}      ( , .  speed    - =  contrast )`, 12, height - 16);
+  }
+}
+
+// Live dials: , and . slow down / speed up everything; - and = soften / strengthen the ink contrast.
+let dialShownUntil = 0;
+function keyPressed() {
+  const K = TUNE.water;
+  const step = (v, d, lo, hi) => Math.round(constrain(v + d, lo, hi) * 10) / 10;
+  if (key === ',' || key === '<') K.speed = step(K.speed, -0.1, 0.1, 3);
+  else if (key === '.' || key === '>') K.speed = step(K.speed, 0.1, 0.1, 3);
+  else if (key === '-' || key === '_') K.contrast = step(K.contrast, -0.1, 0, 1.6);
+  else if (key === '=' || key === '+') K.contrast = step(K.contrast, 0.1, 0, 1.6);
+  else return;
+  dialShownUntil = millis() + 2500;
 }
 
 function windowResized() {
@@ -690,6 +709,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
+uniform float uContrast;
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
@@ -815,12 +835,14 @@ void main() {
 
   vec3 paper = hsv2rgb(vec3(hue, 0.26, 0.88));                      // pale blue paper; rose-lilac when moving
   vec3 dye   = hsv2rgb(vec3(hue - 0.065, 0.78, 0.80));              // turquoise ink; magenta when moving
-  vec3 ink   = vec3(0.025, 0.03, 0.055);
-  vec3 white = vec3(0.96, 0.975, 1.0);
+  float ck = clamp(uContrast, 0.0, 1.0);                           // below 1 the black and white inks fade toward the dye and paper...
+  vec3 ink   = mix(dye * 0.55, vec3(0.025, 0.03, 0.055), ck);
+  vec3 white = mix(paper, vec3(0.96, 0.975, 1.0), ck);
+  float cb = 1.0 + 0.7 * max(uContrast - 1.0, 0.0);                // ...above 1 the black lines get heavier
 
   float patch = smoothstep(-0.25 - aa, 0.25 + aa, sin(3.14159 * u + 1.0 + 1.5 * f0.y));      // broad patches of dye, every other layer or so
   vec3 col = mix(paper, dye, patch * 0.9);
-  float wb = uLine * (0.75 + 0.35 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // the black line varies in weight
+  float wb = uLine * cb * (0.75 + 0.35 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // the black line varies in weight
   float lineW = 1.0 - smoothstep(wb - aa, wb + aa, d0);
   float whiteW = smoothstep(wb + 0.05 - aa, wb + 0.05 + aa, d0) - smoothstep(wb + 0.15 - aa, wb + 0.15 + aa, d0);
   col = mix(col, white, whiteW * 0.95);
@@ -860,7 +882,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -883,7 +905,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -935,8 +957,8 @@ function drawCrowdWater(now) {
     const st = d.storm.v;
     // Phase only ever moves forward. A storm makes the surge uneven (gusts) — the phase still never jumps.
     const gust = 1 + K.gust * st * Math.sin(WTAU * 0.15 * timeS + p.id * 1.7);
-    p.phase += WTAU * d.freq.v * gust * dt;
-    for (let j = 0; j < 3; j++) p.chopPh[j] += WTAU * CHOP_RATE[j] * (0.3 + 0.7 * st) * dt;
+    p.phase += WTAU * d.freq.v * gust * dt * K.speed;
+    for (let j = 0; j < 3; j++) p.chopPh[j] += WTAU * CHOP_RATE[j] * (0.3 + 0.7 * st) * dt * K.speed;
 
     const wsum = (d.wC.v + d.wS.v + d.wT.v) || 1;
     const hue = lerp(K.hueStill, K.hueMoving, d.motion.v) / 360;
@@ -949,7 +971,7 @@ function drawCrowdWater(now) {
 
   // The ink's drag currents drift forward at a pace set by the crowd's average storm — phase only ever advances, so a change of pace never jumps
   const stAvg = list.reduce((a, p) => a + p.d.storm.v, 0) / list.length;
-  inkDragPhase += lerp(K.flowCalm, K.flowStorm, stAvg) * dt;
+  inkDragPhase += lerp(K.flowCalm, K.flowStorm, stAvg) * dt * K.speed;
 
   const ok = W.render({ count: list.length, N, sig: K.bandOverlap * 0.5 / N, wt: inkDragPhase });
   if (!ok) { // no WebGL: say so on screen rather than showing nothing

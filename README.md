@@ -107,6 +107,12 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - `TUNE.point.velNormMax` — the keypoint speed (normalized per-frame, relative to the video's diagonal) that
   reads as "fully activated." Lower this if people barely register as moving (everything stays blue squares);
   raise it if small movements already read as fully in motion.
+- **`TUNE.water.speed` and `TUNE.water.contrast` — the two master dials.** `speed` (default 1) scales how fast
+  everything moves: waves, ripples and ink drift (0.5 = half speed). `contrast` (default 1) sets how bold the ink is:
+  lower fades the black and white lines into the blue (0 = soft, tonal), higher makes the black lines heavier
+  and the whites brighter (up to 1.6). **Both can be changed live on the display machine:** press `,` / `.` for slower /
+  faster and `-` / `=` for softer / bolder contrast — a small readout appears for a couple of seconds. Live changes
+  last until reload, so copy the value you like into `TUNE.water`.
 - `TUNE.water.resolution` — GPU render size relative to the screen (0.75 default). The biggest performance lever.
 - `TUNE.water.steepness` — how steep a full-size wave is. The main "how rough can it get" dial: higher = rougher,
   brighter caustics. Water stays believable below about 1.
