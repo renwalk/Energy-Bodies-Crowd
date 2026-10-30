@@ -14,8 +14,8 @@ following a single participant.
   closest person/skeleton pairs first, so when someone leaves it is the right person's band that goes.) A tracked person who
   isn't matched to a skeleton for `personTimeoutMs` (default 1s) is dropped.
 - **Ink marbling.** The whole screen is a tray of water with ink floating on it: two translucent inks, dark and light grey, in soft bands that
-  roll, fold and swirl, with a faint sheen where the waves catch the light. The dark ink is blue and the light ink is white
-  (warming to pink as people move). Each person's waves are the *contours* of the ink; a storm drags the
+  roll, fold and swirl, with a faint sheen where the waves catch the light. Calm water is blue and white; as people move
+  it turns through violet to pink and magenta. Each person's waves are the *contours* of the ink; a storm drags the
   whole sheet into folds and whirlpools, like a comb pulled through it.
   A vertical mirror line runs down the middle, and the image is an exact mirror across it. **Each person owns a
   horizontal band** of the water running the full width of the screen: the first person is the bottom band and every
@@ -148,7 +148,7 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 - **What sets a drop's size:** that person's *energy* — their movement reading plus a little of their storm reading — so a still person's drop
   is about half the size of a very active person's (it grows as they move and shrinks as they settle). It is capped relative to the screen, so a
   lone person doesn't get a drop the size of the whole picture, and each person gets a small random variation so no two are alike. The drop's
-  pool also changes color with movement (pale pink on white water when calm, pale blue on pink water when moving) so it always stands out.
+  pool takes the same colors (pale blue when calm, pink when moving, a stronger pink when moving so it stands out against the pink ink).
 - **How movement is read:** each body point's speed is judged relative to that person's own body size (so someone far from the camera still
   registers), then averaged over the body. `velNormMax` (how fast a point must move to count as fully active) and `motionFullMean` (how much of
   the body must be active to read as fully in motion) set the sensitivity: lower either to make the water respond to smaller movements.
