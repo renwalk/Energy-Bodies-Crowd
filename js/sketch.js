@@ -1,23 +1,25 @@
 /* ============================================================================
-   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v6: one mirrored image)
-   One image for the whole room. A vertical mirror line runs down the middle of
-   the screen; everything is drawn on one side and reflected onto the other,
-   and the whole image always fits inside the screen.
+   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v9: inside the water)
+   One image for the whole room: you are INSIDE the water, not looking at its surface.
+   The screen is a field of flowing water texture — soft luminous swells with bright,
+   shifting caustic webs where the waves focus light — with no horizon, sky, sun or
+   perspective.
      - PoseNet runs in 'multiple' detection mode and a lightweight nearest-neighbor
        tracker gives each person a stable id across frames
-     - Each person is one COLUMN of shapes stacked down the screen. The first
-       person hugs the mirror line and every additional person adds a column
-       further out; the columns re-space so they always fit.
-     - A column holds that person's number of tracked body points (rounded up to
-       an even number), split across the two sides — a full body is 9 per side
-     - Every shape is ONE continuous line — a spiral that starts on the outer
-       edge and winds inward — so a person's shapes MORPH between forms rather
-       than switching. The form comes from their BODY SHAPE, not their movement,
-       blended continuously: soft and relaxed = round, rigid and upright =
-       boxy, asymmetrical = wedge. A slow drifting wobble keeps every line in
-       constant flux, and the number of shapes in a column glides up and down.
-     - Stillness vs motion sets the color: blue (still) → violet → red (moving)
-     - Nothing rotates; changes glide in slowly
+     - Each person owns a HORIZONTAL BAND of the water, running the full width of the
+       screen. The first person is the bottom band; every additional person adds a band
+       above it. The bands are spread evenly down the screen, so they always fill it,
+       and they blend smoothly into one another. A vertical mirror line runs down the
+       middle of the screen
+     - Movement sets how rough a person's band is. Still = slow, glassy, soft swell;
+       calm, slow movement = long smooth rolling waves; fast and abrupt movement = a
+       storm: swirling, fine, fast-moving texture with sharp caustics, building quickly
+       and settling slowly
+     - Body shape sets the wave profile: soft and relaxed = rounded swells,
+       rigid and upright = flat-topped, asymmetrical = pointed and leaning
+     - The number of body points sets how many waves there are; stillness vs motion
+       sets the color: blue (calm) -> violet -> rose (stormy)
+     - Rendered on the GPU (WebGL)
    IMPORTANT: Load eb-init.js BEFORE this file!
    ============================================================================ */
 
@@ -45,43 +47,60 @@ const TUNE = {
     presenceInRate: 0.3,  // how fast a keypoint fades IN once PoseNet is confident about it again
     presenceOutRate: 0.12 // how fast a keypoint fades OUT when lost — slow, so a borderline/flickering detection doesn't pop on and off
   },
-  kaleido: {
-    // --- layout: a vertical mirror line down the middle of the screen ---
-    overlap: 2,          // shapes are this much bigger than the cell they sit in, so neighbors overlap (1.0 = just touch)
-    maxBandFrac: 0.15,      // widest a shape may get, as a fraction of the screen height — keeps them from stretching into flat ovals when few people are present
-    margin: 0.03,           // empty border around the image, as a fraction of the screen
-    opacity: 0.25,           // translucent, so overlapping shapes show through each other (lower = more see-through, but murkier color on black)
-    // --- how many shapes are in a person's column (across both sides of the mirror) ---
-    reflectionsFrom: 'bodyPoints', // 'bodyPoints': that person's number of tracked body points, rounded up to even
-                                   // 'people':     one per person detected instead
-    // --- body shape → form: asymmetrical = wedge, else rigid/upright = boxy, else soft/relaxed = round. These are
-    //     the centers of smooth transitions, not hard switches — a body between two shapes gets a blend of both. ---
-    asymThreshold: 0.5,     // asymmetry score (0 = perfect mirror, 1 = very lopsided) at which the form is half-way to a wedge
-    rigidThreshold: 0.75,   // rigidity score (0 = slumped and bent, 1 = stiff and upright) at which the form is half-way to boxy
-    formSoftness: 0.15,     // how wide each transition is (bigger = the forms blend over a wider range of posture)
+  water: {
+    // --- the water: a flowing texture filling the screen. Each person owns a horizontal band of it. ---
+    resolution: 0.75,       // GPU render size relative to the screen (1 = full; lower is faster and a little softer)
+    bandOverlap: 0.9,       // how softly one person's band blends into the next (bigger = wider blend)
+    steepness: 0.6,         // how steep a full-size wave is (slope: height / half-wavelength). Higher = rougher, brighter caustics
+    hMax: 1.5,              // soft ceiling on wave height, so even a violent storm stays sane
+    wavelengthSpan: 2.0,    // the height of the screen in the shader's units; crests are counted across this
+    caustics: 0.05,         // how strongly waves focus light into bright webs (0 = none)
+    glow: 1.0,              // brightness of the caustic webs
+    texture: 0.22,          // fine ripple texture that is always present, even in glassy-calm water (0 = perfectly smooth)
+    // --- how a wave responds to its person: calm = smooth rolling swell, storm = steep, choppy, fast ---
+    ampCalm: 0.85, ampSwell: 1.25, stormAmpBoost: 0.5,     // wave height: still / vigorous / extra in a storm
+    freqCalm: 0.10, freqSwell: 0.32, stormFreqBoost: 0.9, // how often a crest passes (per second): still / vigorous / extra in a storm
+    crestsPerPoint: 0.55,   // waves up the screen per tracked body point (a full body of 17 points = 5 across the screen, 11 points = 3)
+    stormCrestBoost: 0.9,   // a storm packs in more, finer waves
+    chop: 1.0,              // slope of the crossing chop waves that roughen the surface, at full storm
+    crestSharpen: 0.6,      // how much a storm sharpens crests and widens troughs
+    gust: 0.6,              // how much a storm makes the waves surge and stall instead of rolling steadily
+    curve: 0.5,             // how much wave crests bow toward the sides of the screen
+    crossSwell: 0.15,       // slope of a gentle, slower second swell, so even calm water isn't perfectly regular
+    // --- reading a storm: vigorous movement that keeps going + sudden bursts + erratic, abrupt movement ---
+    stormStart: 0.4,        // movement level (0-1) above which sustained movement starts to roughen the water
+    burstFull: 0.25,        // size of a sudden burst of speed that counts as a full storm
+    jerkFull: 0.9,          // how erratically the speed changes (0-1) that counts as fully abrupt
+    stormSustainedWeight: 0.4, stormJerkWeight: 0.6, stormBurstWeight: 0.6, // how much each of the three contributes (capped at 1 together)
+    stormAttack: 0.25,      // per pose event: how fast the storm reading builds (quick, so abrupt movement hits hard)...
+    stormRelease: 0.03,     // ...and how slowly it dies away (slow, so the sea settles gently)
+    // --- body shape -> wave profile: asymmetrical = pointed, else rigid/upright = flat-topped, else soft/relaxed = rounded. These
+    //     are the centers of smooth transitions, not hard switches — a body between two shapes gets a blend of both. ---
+    asymThreshold: 0.5,     // asymmetry score (0 = perfect mirror, 1 = very lopsided) at which the wave is half-way to pointed
+    rigidThreshold: 0.75,   // rigidity score (0 = slumped and bent, 1 = stiff and upright) at which the wave is half-way to flat-topped
+    formSoftness: 0.15,     // how wide each transition is (bigger = the profiles blend over a wider range of posture)
     symDeadzone: 0.12,      // left/right mismatch (in shoulder-widths) forgiven as symmetric — nobody's posture is perfect
     symFull: 0.9,           // mismatch that reads as "fully asymmetric"
     spineFullDeg: 25,       // spine (or head-over-shoulders) tilt from vertical that counts as fully un-upright
     shoulderFullDeg: 15,    // shoulder-line tilt that counts as fully un-level
     bentDeg: 100, straightDeg: 175, // elbow/knee angle that counts as fully bent (0) and fully straight (1)
-    postureSmoothing: 0.06, // per pose event: posture is read slowly, so a passing gesture doesn't change the form
-    // --- constant flux: each line's outline drifts slowly and endlessly, even when the body is still ---
-    wobble: 0.11,           // how far the outline wanders from its base form (fraction of its size)
-    flux: 1.2,              // how fast it wanders (radians/second at the base rate) — about 5px/second of drift on a ~100px shape
-    // --- movement → color only ---
+    postureSmoothing: 0.06, // per pose event: posture is read slowly, so a passing gesture doesn't change the wave
+    // --- how many crests: the number of tracked body points ---
+    reflectionsFrom: 'bodyPoints', // 'bodyPoints': that person's number of tracked body points, rounded up to even
+                                   // 'people':     one per person detected instead
+    // --- movement -> color (hue in degrees: 215 = blue, 270 = violet, 320 = rose/magenta, 360 = red) ---
     motionFullMean: 0.3,    // mean keypoint activation that reads as "fully in motion"
-    // --- stillness vs motion → color (hue in degrees: 215 = blue, 360 = red, passing through violet) ---
-    hueStill: 215, hueMoving: 360,
+    hueStill: 215, hueMoving: 320, // (full red, 360, makes water look like flesh — rose/magenta keeps the warm shift but still reads as water)
     saturation: 80, brightness: 95,
     // --- calm, flowing motion: everything below trades responsiveness for smoothness ---
     motionAttack: 0.12,     // per pose event: how fast the movement reading rises when someone starts moving...
-    motionRelease: 0.04,    // ...and how slowly it falls when they stop, so color and shape settle gently instead of snapping back
-    countDebounceMs: 1200,  // a new shape count in a column must hold this long before the column starts growing/shrinking to it
-    fadeInMs: 1200,         // how slowly a newly detected person fades in
-    // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer:
-    // a column moving to a new position, the spacing between columns, the color, the overall fit to the screen,
-    // how fast a shape morphs between forms, and how fast a column gains or loses a shape
-    smooth: { rank: 1.4, crowd: 1.4, motion: 1.6, fit: 1.2, form: 2.2, count: 1.6 }
+    motionRelease: 0.04,    // ...and how slowly it falls when they stop, so color and waves settle gently instead of snapping back
+    countDebounceMs: 1200,  // a new crest count must hold this long before the water starts changing to it
+    fadeInMs: 1200,         // how slowly a newly detected person's wave builds
+    // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer. "Up" is
+    // growing/speeding up, "Down" is settling; a storm builds fast and dies slowly.
+    smooth: { rank: 1.4, crowd: 1.4, motion: 1.6, form: 2.2, count: 1.6,
+              ampUp: 1.0, ampDown: 2.4, freqUp: 0.9, freqDown: 2.4, stormUp: 0.5, stormDown: 3.0 }
   }
 };
 
@@ -173,7 +192,7 @@ window.onPrint = function () {
 };
 
 /* =============================
-   3) PERSON — one tracked body in the crowd (= one ring)
+   3) PERSON — one tracked body in the crowd (= one wave)
    ============================= */
 class Person {
   constructor(id, cx, cy) {
@@ -188,18 +207,24 @@ class Person {
     this.points = {};
     for (const name of KEYPOINT_NAMES) {
       // presence fades smoothly in/out instead of snapping with the raw PoseNet score,
-      // so a keypoint flickering near the confidence threshold doesn't make the ring jump around.
-      this.points[name] = { x: cx, y: cy, vel: 0, score: 0, presence: 0 };
+      // so a keypoint flickering near the confidence threshold doesn't make the wave jump around.
+      this.points[name] = { x: cx, y: cy, vel: 0, raw: 0, rawPrev: 0, score: 0, presence: 0 };
     }
 
     // Movement summary, recomputed on every pose event (see updatePersonMetrics).
     this.bodyScale = 0;   // apparent shoulder-width-equivalent in video px — normalizes the posture measurements
-    this.m = { bodyPoints: 0, motion: 0, asym: 0, rigid: 0.5 };
+    this.m = { bodyPoints: 0, motion: 0, asym: 0, rigid: 0.5, fast: 0, slow: 0, jerk: 0, storm: 0 };
     this.countTarget = 0; this.countPending = 0; this.pendingSince = 0;
 
-    // Values actually drawn, each gliding toward its target: column position, color, how many shapes the column
-    // holds, and the mix of the three forms (round / boxy / wedge).
-    this.d = { rank: new Smooth(1), motion: new Smooth(0), count: new Smooth(1), wC: new Smooth(1), wS: new Smooth(0), wT: new Smooth(0) };
+    // Values actually drawn, each gliding toward its target: this person's patch of water, color, how many crests,
+    // the mix of wave profiles (round / flat-topped / pointed), wave height, how often crests pass, and the storm.
+    this.d = { rank: new Smooth(1), motion: new Smooth(0), count: new Smooth(1), wC: new Smooth(1), wS: new Smooth(0), wT: new Smooth(0),
+               amp: new Smooth(0), freq: new Smooth(0), storm: new Smooth(0) };
+    // Wave phases only ever move forward (integrated), so changing speed can't make the water jump. The chop phases
+    // start at fixed random offsets so every person's crossing waves differ.
+    const r = mulberry32(id * 7919 + 13);
+    this.phase = r() * Math.PI * 2;
+    this.chopPh = [r() * Math.PI * 2, r() * Math.PI * 2, r() * Math.PI * 2];
     this.dInit = false;
   }
 }
@@ -233,21 +258,25 @@ function matchPeopleToPoses(poses, now) {
   const used = new Array(detections.length).fill(false);
   const unmatchedPeople = [];
 
-  // Pass 1: match existing people to the nearest unused detection within the normal radius.
+  // Pass 1: match people to detections within the normal radius, CLOSEST PAIRS FIRST. (Letting each person in turn grab
+  // whichever detection is nearest to them gets identities wrong: when someone leaves, the next person in the list
+  // would take a neighbour's skeleton and it would be the wrong person who disappears.)
+  const pairs = [];
   for (const person of people.values()) {
-    let best = -1, bestD = Infinity;
     for (let i = 0; i < detections.length; i++) {
-      if (used[i]) continue;
       const d = dist(person.tx, person.ty, detections[i].center.x, detections[i].center.y);
-      if (d < bestD) { bestD = d; best = i; }
-    }
-    if (best >= 0 && bestD < matchRadius) {
-      used[best] = true;
-      updatePersonPoints(person, detections[best].pose, now);
-    } else {
-      unmatchedPeople.push(person);
+      if (d < matchRadius) pairs.push([d, person, i]);
     }
   }
+  pairs.sort((a, b) => a[0] - b[0]);
+  const matched = new Set();
+  for (const [, person, i] of pairs) {
+    if (used[i] || matched.has(person)) continue;
+    used[i] = true;
+    matched.add(person);
+    updatePersonPoints(person, detections[i].pose, now);
+  }
+  for (const person of people.values()) if (!matched.has(person)) unmatchedPeople.push(person);
 
   // Pass 2: fallback matching, no radius limit. If a tracked person moved fast enough (or their
   // centroid jumped because a different set of keypoints was visible this frame) to miss the radius
@@ -321,6 +350,8 @@ function updatePersonPoints(person, pose, now) {
       pt.x = lerp(pt.x, k.position.x, P.posSmoothing);
       pt.y = lerp(pt.y, k.position.y, P.posSmoothing);
       pt.vel = lerp(pt.vel, rawVel, P.velEMA);
+      pt.rawPrev = pt.raw;
+      pt.raw = rawVel; // this event's own speed (not smoothed) — what a sudden burst, and jerkiness, are measured from
       pt.score = k.score;
       pt.presence = lerp(pt.presence, 1, P.presenceInRate);
 
@@ -328,6 +359,8 @@ function updatePersonPoints(person, pose, now) {
       sumVel += pt.vel;
     } else {
       pt.vel = lerp(pt.vel, 0, P.velEMA); // decay toward still when not seen
+      pt.rawPrev = pt.raw;
+      pt.raw = 0;
       pt.score = 0;
       pt.presence = lerp(pt.presence, 0, P.presenceOutRate);
     }
@@ -339,13 +372,13 @@ function updatePersonPoints(person, pose, now) {
 }
 
 /* =============================
-   5b) BODY → RING TARGETS (per pose event)
+   5b) BODY → WAVE TARGETS (per pose event)
    ============================= */
 const vNorm = v => clamp01(map(v, TUNE.point.velNormMin, TUNE.point.velNormMax, 0, 1));
 const evenUp = n => 2 * Math.ceil(n / 2);
 
 function updatePersonMetrics(person, now) {
-  const K = TUNE.kaleido, P = person.points, m = person.m;
+  const K = TUNE.water, P = person.points, m = person.m;
 
   // Torso-weighted center, used only to match this person to the next frame's skeletons. Weighted by
   // presence so a hip or shoulder fading in/out glides the center rather than jumping it.
@@ -358,15 +391,34 @@ function updatePersonMetrics(person, now) {
   if (ws > 0.01) { person.tx = wx / ws; person.ty = wy / ws; }
 
   // How many body points are tracked, and how much the body is moving overall (still vs. moving).
-  let visible = 0, sum = 0;
+  let visible = 0, sum = 0, rawSum = 0, jerkSum = 0;
   for (const name of KEYPOINT_NAMES) {
     if (P[name].presence <= 0.5) continue;
     visible++; sum += vNorm(P[name].vel);
+    const r = vNorm(P[name].raw);
+    rawSum += r; jerkSum += Math.abs(r - vNorm(P[name].rawPrev)); // each point's own change in speed — averaging the changes (not the speeds) keeps erratic movement visible
   }
   m.bodyPoints = visible;
-  // Movement only drives COLOR now. Low-passed: quick to notice motion, slow to let go, so color drifts rather than flickers.
+  // How much the body is moving overall. Low-passed: quick to notice motion, slow to let go, so the water drifts
+  // between states rather than flickering.
   const motionNow = visible ? clamp01((sum / visible) / K.motionFullMean) : 0;
   m.motion = lerp(m.motion, motionNow, motionNow > m.motion ? K.motionAttack : K.motionRelease);
+
+  // How stormy. Three things roughen the water, none of which a slow, steady movement — however large — triggers:
+  //   sustained  vigorous movement that keeps going
+  //   burst      this moment's speed running well ahead of its own recent average (the same fast-vs-slow idea the original
+  //              Energy Bodies used for anger), so a flick or a jolt roughens the water even from a standstill
+  //   jerk       how erratically the speed changes from one moment to the next: a smooth, flowing dance has a speed that
+  //              rises and falls evenly, abrupt, jabbing movement doesn't
+  const rawNow = visible ? rawSum / visible : 0;
+  m.fast = lerp(m.fast, rawNow, 0.5);
+  m.slow = lerp(m.slow, rawNow, 0.05);
+  m.jerk = lerp(m.jerk, visible ? jerkSum / visible : 0, 0.3);
+  const burst = clamp01(Math.max(0, m.fast - m.slow) / K.burstFull);
+  const jerkN = clamp01(m.jerk / K.jerkFull);
+  const sustained = (() => { const x = clamp01((motionNow - K.stormStart) / (1 - K.stormStart)); return x * x * (3 - 2 * x); })();
+  const stormNow = clamp01(K.stormSustainedWeight * sustained + K.stormJerkWeight * jerkN + K.stormBurstWeight * burst);
+  m.storm = lerp(m.storm, stormNow, stormNow > m.storm ? K.stormAttack : K.stormRelease);
 
   // Body shape drives the FORM. Read slowly, and held when the body can't be measured this frame.
   updateBodyScale(person);
@@ -381,7 +433,7 @@ function updatePersonMetrics(person, now) {
 // How much of each form a body is: [round, boxy, wedge], summing to 1. Asymmetry pulls toward the wedge; whatever is
 // left is split between boxy (stiff, upright) and round (soft, relaxed). All smooth — nothing switches.
 function formWeights(m) {
-  const K = TUNE.kaleido, soft = K.formSoftness;
+  const K = TUNE.water, soft = K.formSoftness;
   const ss = x => { x = clamp01(x); return x * x * (3 - 2 * x); };
   const wT = ss((m.asym - (K.asymThreshold - soft)) / (2 * soft));
   const wS = (1 - wT) * ss((m.rigid - (K.rigidThreshold - soft)) / (2 * soft));
@@ -408,7 +460,7 @@ function updateBodyScale(person) {
 //   rigid 0..1  how stiff and upright the body is: vertical spine (or head over the shoulders), level shoulders, and
 //               straight arms and legs. Slumped, tilted, or bent = low; standing tall and straight = high.
 function computePosture(person) {
-  const K = TUNE.kaleido, P = person.points;
+  const K = TUNE.water, P = person.points;
   const vis = n => P[n].presence > 0.6;
   const both = (a, b) => vis(a) && vis(b);
   const mid = (a, b) => ({ x: (P[a].x + P[b].x) / 2, y: (P[a].y + P[b].y) / 2 });
@@ -450,7 +502,7 @@ const SYMMETRY_PAIRS = [
   ['leftHip', 'rightHip'], ['leftKnee', 'rightKnee'], ['leftAnkle', 'rightAnkle']
 ];
 function computeAsymmetry(person) {
-  const K = TUNE.kaleido, P = person.points;
+  const K = TUNE.water, P = person.points;
   if (!person.bodyScale) return null;
   const vis = n => P[n].presence > 0.6;
   const mid = (a, b) => ({ x: (P[a].x + P[b].x) / 2, y: (P[a].y + P[b].y) / 2 });
@@ -490,8 +542,8 @@ function computeAsymmetry(person) {
   return clamp01((sum / n - K.symDeadzone) / (K.symFull - K.symDeadzone));
 }
 
-// A change in a column's shape count only takes effect once it has held for a moment, so a body point flickering at
-// the edge of visibility doesn't make the column keep growing and shrinking. (The change itself then glides in.)
+// A change in a person's crest count only takes effect once it has held for a moment, so a body point flickering at
+// the edge of visibility doesn't make the water keep re-arranging itself. (The change itself then glides in.)
 function commitCount(person, raw, now) {
   if (person.poseEvents < 5 || !person.countTarget) { // presence is still ramping up on a brand-new person; settle silently
     person.countTarget = person.countPending = raw;
@@ -501,7 +553,7 @@ function commitCount(person, raw, now) {
   if (raw !== person.countPending) {
     person.countPending = raw;
     person.pendingSince = now;
-  } else if (raw !== person.countTarget && now - person.pendingSince >= TUNE.kaleido.countDebounceMs) {
+  } else if (raw !== person.countTarget && now - person.pendingSince >= TUNE.water.countDebounceMs) {
     person.countTarget = raw;
   }
 }
@@ -554,6 +606,7 @@ function setup() {
 
 function draw() {
   background(0);
+  if (trackingStarted) drawCrowdWater(millis());
 
   fill(255);
   noStroke();
@@ -561,9 +614,6 @@ function draw() {
   text(`people: ${people.size} | tracking: ${trackingStarted}`, 12, 20);
   if (window.__ebSession?.active) text(`Recording: ${window.__ebSession.samples} samples`, 12, 40);
   text(`[${displayOrientation}]`, 12, 60);
-
-  if (!trackingStarted) return;
-  drawCrowdMirror(millis());
 }
 
 function windowResized() {
@@ -571,7 +621,7 @@ function windowResized() {
 }
 
 /* =============================
-   7) DRAWING — one mirrored image for the whole room
+   7) DRAWING — lit 3D water, rendered on the GPU
    ============================= */
 
 // A critically damped spring ("smooth damp"). Unlike lerp-toward-target every frame — which is fastest at the very
@@ -590,14 +640,16 @@ class Smooth {
     this.v = target + (change + temp) * decay;
     return this.v;
   }
+  // Same, but with one glide time for rising and another for falling — a storm builds fast and dies slowly.
+  ud(target, tUp, tDown, dt) { return this.update(target, target > this.v ? tUp : tDown, dt); }
 }
 
-const crowdS = new Smooth(1), fitS = new Smooth(0); // eased number of people (columns glide apart/together) and the width of one column
-let crowdInit = false, fitInit = false;
+const crowdS = new Smooth(1); // eased number of people, so the bands of water glide apart/together when someone joins or leaves
+let crowdInit = false;
 
 // Fade a person in when first detected and out as they go missing, rather than popping.
 function lifeAlpha(person, now) {
-  const fadeIn = clamp01((now - person.born) / TUNE.kaleido.fadeInMs);
+  const fadeIn = clamp01((now - person.born) / TUNE.water.fadeInMs);
   const missing = now - person.lastSeen;
   const fadeStart = 250;
   const fadeOut = missing > fadeStart ? clamp01(1 - (missing - fadeStart) / (TUNE.tracking.personTimeoutMs - fadeStart)) : 1;
@@ -614,209 +666,256 @@ function mulberry32(seed) {
   };
 }
 
-// HSB (hue 0-360, saturation/brightness 0-100) → CSS hsl() string, since the shapes are drawn on the raw canvas.
-function hsbToCss(h, sat, bri) {
-  const s = sat / 100, v = bri / 100;
-  const l = v * (1 - s / 2);
-  const sl = (l === 0 || l === 1) ? 0 : (v - l) / Math.min(l, 1 - l);
-  return `hsl(${Math.round(h) % 360}, ${(sl * 100).toFixed(1)}%, ${(l * 100).toFixed(1)}%)`;
+const WTAU = Math.PI * 2;
+const CHOP_RATE = [0.9, 1.4, 2.0]; // how fast each crossing chop wave moves, in cycles per second at full storm (x1.35) — kept under ~3 so the shimmer never gets strobe-like
+const MAX_WAVES = 12; // must match the shader's array size (and TUNE.tracking.maxPeople)
+
+/* --- the water shader ----------------------------------------------------------------------------------------------
+   The screen is a flat field of water: for every pixel the shader works out the water's height there (a blend of every
+   person's waves, weighted by how close the pixel is to that person's horizontal band), then its slope and curvature,
+   and lights it — soft relief from the slope, bright caustic webs from the curvature. There is no camera, perspective,
+   sky or horizon. Each person's wave data arrives as four vec4s per person (see drawCrowdWater). Everything about a
+   wave's shape lives in heightAt(). */
+const WATER_VERT = `
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const WATER_FRAG = `
+precision highp float;
+#define MAXW 12
+uniform vec2 uRes;
+uniform int uCount;
+uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
+uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
+uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
+uniform vec4 uP2[MAXW];   // hue (0-1), rank (1 = the bottom band), chop phase 0, chop phase 1
+uniform vec4 uP3[MAXW];   // chop phase 2
+const float TAU = 6.2831853;
+
+float tanhf(float x) { x = clamp(x, -9.0, 9.0); float e = exp(2.0 * x); return (e - 1.0) / (e + 1.0); }
+
+// One wave's shape from three profiles blended by w (round, flat-topped, pointed); a storm (cp > 1) sharpens crests and
+// widens troughs. About -1 (trough) .. +1 (crest).
+float prof(float th, vec3 w, float cp) {
+  float s = sin(th);
+  float v = w.x * s;
+  if (w.y > 0.001) v += w.y * tanhf(1.5 * s) / 0.9051;
+  if (w.z > 0.001) v += w.z * 0.8553 * asin(clamp(0.92 * sin(th + 0.8 * s), -1.0, 1.0));   // corners rounded a little: a perfect point would focus all the light into one hairline
+  if (cp > 1.001) { float c = (cp - 1.0) * 1.2; v = (exp(c * v) - 1.0) / (exp(c) - 1.0); }   // smooth: sharper crests, broader shallower troughs, no corner anywhere
+  return v;
 }
 
-/* --- the shape: ONE continuous line ---------------------------------------------------------------------------------
-   Every shape is a single spiral: a line that starts on the outer edge and winds inward. The round, boxy and wedge
-   forms are three versions of that same spiral with the same number of points, so any mix of the three is just
-   another spiral — which is what lets a person's shapes morph smoothly between forms as their body shape changes,
-   instead of one shape disappearing and another appearing. Forms live in a unit box (x, y from -0.5 to 0.5); the
-   wedge's flat side is on the -x side, against the mirror line. */
-const SP_N = 120, SP_TURNS = 2.1, SP_WOBBLE_ORDERS = [2, 3, 4, 5];
-const SPIRAL = (function buildSpiral() {
-  const TAU = Math.PI * 2;
-  const phi = new Float32Array(SP_N), scale = new Float32Array(SP_N);
-  for (let j = 0; j < SP_N; j++) { const t = j / (SP_N - 1); phi[j] = TAU * SP_TURNS * t; scale[j] = 1 - 0.93 * t; }
-
-  // Distance from a form's center to its outline, in direction th.
-  const roundR = () => 0.5;
-  const boxyR = th => 0.5 / Math.pow(Math.pow(Math.abs(Math.cos(th)), 3.2) + Math.pow(Math.abs(Math.sin(th)), 3.2), 1 / 3.2);
-  const tri = [[-0.5, -0.5], [0.5, 0], [-0.5, 0.5]], triC = [-1 / 6, 0];
-  const cross = (px, py, qx, qy) => px * qy - py * qx;
-  const rayTri = th => { // cast a ray from the triangle's centroid and find where it leaves the triangle
-    const dx = Math.cos(th), dy = Math.sin(th);
-    let best = Infinity;
-    for (let e = 0; e < 3; e++) {
-      const a = tri[e], b = tri[(e + 1) % 3], ex = b[0] - a[0], ey = b[1] - a[1];
-      const den = cross(dx, dy, ex, ey);
-      if (Math.abs(den) < 1e-9) continue;
-      const t = cross(a[0] - triC[0], a[1] - triC[1], ex, ey) / den;
-      const u = cross(a[0] - triC[0], a[1] - triC[1], dx, dy) / den;
-      if (t > 0 && u >= 0 && u <= 1) best = Math.min(best, t);
+// The water's height at q (q.x across the screen, q.y up it, -1..1), as a flat field — there is no perspective and no
+// distance. Mirror-symmetric: only |q.x| matters.
+// Every wave's height is its SLOPE times its wavelength / 2pi, so however many fine waves a storm packs in, the surface
+// can never get steeper than the slopes chosen here.
+float heightAt(vec2 q) {
+  float ax = sqrt(q.x * q.x + 0.0016) - 0.04;                     // |x|, rounded off at 0 so the mirror line has no crease
+  float tau = clamp((q.y + 1.0) * 0.5, 0.0, 1.0);                 // where this is up the screen: 0 = the bottom, 1 = the top
+  float num = 0.0, den = 0.0;
+  for (int k = 0; k < MAXW; k++) {
+    if (k >= uCount) break;
+    float d = (tau - (uP2[k].y - 0.5) / uN) / uSig;               // how far this point is from the centre of person k's band
+    if (abs(d) > 3.2) continue;
+    float w = exp(-0.5 * d * d) * (1.0 - smoothstep(2.4, 3.2, abs(d)));   // fades to exactly zero at the edge of a band's reach, so there is never a step (a step would focus light into a hairline)
+    vec4 p0 = uP0[k];
+    vec4 p1 = uP1[k];
+    float lam = uSpan / p0.y;                                     // this person's wavelength
+    // swirl: a storm bends the water's own coordinates, turning straight waves into turbulent currents (symmetric in x)
+    float sw = max(p0.z, 1.8 * uTexture);
+    float wy = q.y + 0.10 * sw * sin(ax * 3.7 - p0.w * 0.45 + q.y * 2.0) + 0.06 * sw * sin(ax * 8.3 + q.y * 6.1 + p0.w * 0.8);
+    float wx = ax + 0.12 * sw * sin(q.y * 4.7 + p0.w * 0.6 + ax * 1.7);
+    float yl = wy / lam;
+    float xl = wx / lam;
+    float th = TAU * yl + p0.w + uCurve * ax * ax * (0.4 + p0.z);
+    float hk = uSteep * p0.x * (lam / TAU) * prof(th, p1.xyz, 1.0 + uSharpen * p0.z);
+    hk += uCross * (lam / 1.4 / TAU) * sin(TAU * 1.4 * (yl * 0.94 + xl * 0.34) + p0.w * 0.6 + 1.1);
+    float cs = max(p0.z, uTexture);                               // even calm water has a little fine texture
+    {
+      // three crossing wave trains, each travelling at its own angle (about 38, -52 and 25 degrees off the main swell)
+      float ch = 0.30 * (lam / 2.7 / TAU) * sin(TAU * 2.7 * (yl * 0.79 + xl * 0.62) + uP2[k].z)
+               + 0.28 * (lam / 4.4 / TAU) * sin(TAU * 4.4 * (yl * 0.62 - xl * 0.79) + uP2[k].w)
+               + 0.24 * (lam / 7.2 / TAU) * sin(TAU * 7.2 * (yl * 0.91 + xl * 0.42) + uP3[k].x);
+      hk += uChop * cs * ch;
     }
-    return best;
-  };
-  // round off the triangle's corners by smoothing its radius around the full circle
-  let table = Array.from({ length: 360 }, (_, i) => rayTri(TAU * i / 360));
-  for (let pass = 0; pass < 8; pass++) table = table.map((v, i) => (table[(i + 359) % 360] + 2 * v + table[(i + 1) % 360]) / 4);
-  const wedgeR = th => {
-    const f = ((th % TAU) + TAU) % TAU / TAU * 360, i = Math.floor(f) % 360, k = f - Math.floor(f);
-    return table[i] * (1 - k) + table[(i + 1) % 360] * k;
-  };
+    num += w * p1.w * hk;
+    den += w;
+  }
+  float h = num / max(den, 0.0001);
+  return uHMax * tanhf(h / uHMax);
+}
 
-  const forms = [{ c: [0, 0], r: roundR }, { c: [0, 0], r: boxyR }, { c: triC, r: wedgeR }]; // order: round, boxy, wedge
-  const X = forms.map(() => new Float32Array(SP_N)), Y = forms.map(() => new Float32Array(SP_N));
-  forms.forEach((f, k) => {
-    for (let j = 0; j < SP_N; j++) {
-      const r = f.r(phi[j]) * scale[j];
-      X[k][j] = f.c[0] + r * Math.cos(phi[j]);
-      Y[k][j] = f.c[1] + r * Math.sin(phi[j]);
+// The look of the water at height tau up the screen: blended hue, storm and wave size of the nearby bands.
+vec3 lookAt(float tau) {
+  float hue = 0.0, st = 0.0, am = 0.0, den = 0.0;
+  for (int k = 0; k < MAXW; k++) {
+    if (k >= uCount) break;
+    float d = (tau - (uP2[k].y - 0.5) / uN) / uSig;
+    if (abs(d) > 3.2) continue;
+    float w = exp(-0.5 * d * d) * (1.0 - smoothstep(2.4, 3.2, abs(d)));
+    hue += w * uP2[k].x; st += w * uP0[k].z * uP1[k].w; am += w * uP0[k].x * uP1[k].w * uSteep * (uSpan / uP0[k].y) / TAU; den += w;
+  }
+  return vec3(hue, st, am) / max(den, 0.0001);
+}
+
+vec3 hsv2rgb(vec3 c) {
+  vec3 p = abs(fract(c.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+}
+
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+
+void main() {
+  vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / (0.5 * uRes.y);       // y: -1..1, x: -aspect..aspect, symmetric about the middle
+  float e = 1.6 / uRes.y;                                          // about a pixel and a half, in the same units
+  float h0 = heightAt(q);
+  float hxp = heightAt(q + vec2(e, 0.0)), hxm = heightAt(q - vec2(e, 0.0));
+  float hyp = heightAt(q + vec2(0.0, e)), hym = heightAt(q - vec2(0.0, e));
+  float gx = (hxp - hxm) / (2.0 * e), gy = (hyp - hym) / (2.0 * e);   // slope across / up the screen
+  float lap = clamp((hxp + hxm + hyp + hym - 4.0 * h0) / (e * e), -40.0, 40.0);   // curvature: where the surface focuses (or spreads) light
+
+  vec3 lk = lookAt(clamp((q.y + 1.0) * 0.5, 0.0, 1.0));
+  float hue = lk.x, storm = lk.y, amp = lk.z;
+
+  // soft relief: light comes from above, so slopes facing up the screen glow and the others fall into shadow
+  vec3 n = normalize(vec3(-gx * 1.2, -gy * 1.2, 1.0));
+  float lit = clamp(dot(n, normalize(vec3(0.0, 0.7, 0.7))), 0.0, 1.0);
+  float crest = smoothstep(-0.6, 1.0, h0 / (amp + 0.02));
+
+  vec3 deep = hsv2rgb(vec3(hue, 0.92, 0.12 + 0.05 * (1.0 - storm)));
+  vec3 glowc = hsv2rgb(vec3(hue, 0.72, 0.62));
+  vec3 col = mix(deep, glowc, clamp(0.08 + 0.26 * lit * lit + 0.20 * crest, 0.0, 1.0));
+
+  // caustics: light focused by the curved surface into bright, shifting webs. Rougher water curves more, so a storm's
+  // webs are finer and brighter than a calm band's soft ones.
+  float focus = clamp(1.0 - uCaus * lap, 0.0, 2.0);
+  float web = pow(focus, 3.2) * 0.075;
+  col += hsv2rgb(vec3(hue - 0.03, 0.30, 1.0)) * web * uGlow * (0.55 + 0.45 * storm);
+
+  col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x), gl_FragCoord.y)) - 0.5) / 255.0;   // dither, so the dark gradients don't band (mirrored, like everything else)
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+const WaterGL = {
+  tried: false, ok: false, canvas: null, gl: null, prog: null, u: {}, w: 0, h: 0, error: '',
+  p0: new Float32Array(MAX_WAVES * 4), p1: new Float32Array(MAX_WAVES * 4), p2: new Float32Array(MAX_WAVES * 4), p3: new Float32Array(MAX_WAVES * 4),
+
+  init() {
+    if (this.tried) return this.ok;
+    this.tried = true;
+    try {
+      this.canvas = document.createElement('canvas');
+      const gl = this.canvas.getContext('webgl', { antialias: false, alpha: false, depth: false, stencil: false });
+      if (!gl) throw new Error('WebGL is not available');
+      const compile = (type, src) => {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src); gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+        return sh;
+      };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, compile(gl.VERTEX_SHADER, WATER_VERT));
+      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, WATER_FRAG));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog);
+      // one big triangle that covers the whole screen
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, 'aPos');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uP0', 'uP1', 'uP2', 'uP3']) {
+        this.u[n] = gl.getUniformLocation(prog, n);
+      }
+      this.gl = gl; this.prog = prog; this.ok = true;
+    } catch (e) {
+      this.error = String(e.message || e);
+      console.error('[WATER] could not start the GPU water renderer:', this.error);
     }
-  });
-  // for the wobble: cos/sin of each wobble order at every point along the spiral
-  const hc = SP_WOBBLE_ORDERS.map(m => Float32Array.from(phi, p => Math.cos(m * p)));
-  const hs = SP_WOBBLE_ORDERS.map(m => Float32Array.from(phi, p => Math.sin(m * p)));
-  return { X, Y, hc, hs };
-})();
+    return this.ok;
+  },
 
-// Each shape gets its own fixed personality from a seed — how much and how fast each wobble wanders, and a small
-// lean and tilt — so neighbors in a column are all a little different.
-const paramCache = new Map();
-function shapeParams(seed) {
-  let p = paramCache.get(seed);
-  if (p) return p;
-  const rnd = mulberry32(seed), TAU = Math.PI * 2;
-  p = {
-    amp: [1, 0.75, 0.5, 0.35].map(a => a * (0.6 + 0.4 * rnd())),
-    ph: [0, 0, 0, 0].map(() => rnd() * TAU),
-    om: [0, 0, 0, 0].map(() => (rnd() < 0.5 ? -1 : 1) * (0.5 + rnd())),
-    lean: (rnd() - 0.5) * 0.4,
-    tilt: (rnd() - 0.5) * 0.32
-  };
-  p.cosT = Math.cos(p.tilt); p.sinT = Math.sin(p.tilt);
-  if (paramCache.size > 3000) paramCache.clear();
-  paramCache.set(seed, p);
-  return p;
-}
-
-// Build one shape's spiral for this instant: blend the three forms by `w` = [round, boxy, wedge], let the outline
-// wander by the slow drift at time `timeS`, lean/tilt it, then rescale to fill its cell exactly — however it
-// wobbles or blends it can never poke outside its cell, which is what keeps the whole image inside the screen.
-// Writes the normalized points (x, y pairs, each -0.5..0.5) into `out`.
-function shapePoints(prm, w, timeS, out) {
-  const K = TUNE.kaleido, S = SPIRAL, N = SP_N;
-  const ca = [0, 0, 0, 0], sa = [0, 0, 0, 0];
-  for (let m = 0; m < 4; m++) {
-    const ang = prm.ph[m] + prm.om[m] * K.flux * timeS;
-    ca[m] = Math.cos(ang) * prm.amp[m] * K.wobble;
-    sa[m] = Math.sin(ang) * prm.amp[m] * K.wobble;
+  // Renders the water for this frame into the p5 canvas.
+  render(f) {
+    if (!this.init()) return false;
+    const K = TUNE.water, gl = this.gl, u = this.u;
+    const w = Math.max(64, Math.round(width * K.resolution / 2) * 2), h = Math.max(64, Math.round(height * K.resolution / 2) * 2);
+    if (w !== this.w || h !== this.h) { this.canvas.width = this.w = w; this.canvas.height = this.h = h; }
+    gl.viewport(0, 0, w, h);
+    gl.uniform2f(u.uRes, w, h);
+    gl.uniform1i(u.uCount, f.count);
+    gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
+    gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
+    gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
+    gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
+    gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    drawingContext.drawImage(this.canvas, 0, 0, width, height);   // same frame, so the GPU buffer is still valid
+    return true;
   }
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (let j = 0; j < N; j++) {
-    let x = w[0] * S.X[0][j] + w[1] * S.X[1][j] + w[2] * S.X[2][j];
-    let y = w[0] * S.Y[0][j] + w[1] * S.Y[1][j] + w[2] * S.Y[2][j];
-    let wob = 0; // sin(mφ + a) = sin(mφ)cos(a) + cos(mφ)sin(a)
-    for (let m = 0; m < 4; m++) wob += S.hs[m][j] * ca[m] + S.hc[m][j] * sa[m];
-    x *= 1 + wob; y *= 1 + wob;
-    const rx = x * prm.cosT - y * prm.sinT + prm.lean * y, ry = x * prm.sinT + y * prm.cosT;
-    out[2 * j] = rx; out[2 * j + 1] = ry;
-    if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
-    if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
-  }
-  const sx = 1 / (maxX - minX), sy = 1 / (maxY - minY);
-  for (let j = 0; j < N; j++) { out[2 * j] = (out[2 * j] - minX) * sx - 0.5; out[2 * j + 1] = (out[2 * j + 1] - minY) * sy - 0.5; }
-}
-const SCRATCH = new Float32Array(SP_N * 2);
+};
 
-// Trace a shape AND its reflection as a single path. The reflection is the very same points mirrored across the
-// vertical line at `axisX`. Doing both in one path (one fill, one stroke) means the two halves can never composite in a
-// different order, so the image is an exact mirror even where translucent paint overlaps at the seam.
-function tracePair(ctx, pts, axisX, off, cy, sw, sh) {
-  for (const side of [1, -1]) {
-    for (let i = 0; i < pts.length; i += 2) {
-      const x = axisX + side * (off + pts[i] * sw), y = cy + pts[i + 1] * sh;
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-  }
-}
-
-function drawBlob(ctx, pts, axisX, off, cy, sw, sh, lineW, fillA, strokeA) {
-  ctx.beginPath();
-  tracePair(ctx, pts, axisX, off, cy, sw, sh);
-  ctx.globalAlpha = fillA; ctx.fill();         // the open spiral fills as the whole form
-  ctx.lineWidth = lineW;
-  ctx.globalAlpha = strokeA; ctx.stroke();
-}
-
-const smooth01 = x => { x = clamp01(x); return x * x * (3 - 2 * x); };
-
-// One person's column: a vertical stack of shapes, drawn on both sides of the mirror line. `bandPos` is how many
-// columns out from the mirror line this one starts (0 = touching it); `bw` is the width of one column. The shape count
-// is a smoothly gliding number: the shapes slide to their new spacing, and a shape that's being gained or lost grows
-// from (or shrinks to) nothing instead of popping.
-function drawColumn(ctx, person, bandPos, bw, alpha, css, timeS) {
-  if (alpha <= 0.002) return;
-  const K = TUNE.kaleido, d = person.d, W = width, H = height;
-  const count = Math.max(1, d.count.v);
-  const wsum = (d.wC.v + d.wS.v + d.wT.v) || 1;
-  const w = [d.wC.v / wsum, d.wS.v / wsum, d.wT.v / wsum];
-  const top = H * K.margin, bottom = H * (1 - K.margin);
-  const step = (bottom - top) / (count - 1 + K.overlap); // the stack fills the screen height exactly, for any count
-  const sh = step * K.overlap, sw = bw * K.overlap, inner = bandPos * bw;
-  const lineW = constrain(sh * 0.085, 2, 11);
-  ctx.fillStyle = css;
-  ctx.strokeStyle = css;
-  for (let i = 0, n = Math.ceil(count - 0.001); i < n; i++) {
-    const g = smooth01(count - i);       // 1 for a full shape, <1 while it's being gained or lost
-    if (g < 0.02) continue;
-    const seed = person.id * 1009 + i * 31;
-    const jr = mulberry32(seed ^ 0x9e3779b9); // every shape is a little different in size
-    const jw = 0.82 + 0.18 * jr(), jh = 0.86 + 0.14 * jr();
-    shapePoints(shapeParams(seed), w, timeS, SCRATCH);
-    const shw = sw * jw * g, shh = sh * jh * g;
-    const cy = Math.min(top + sh / 2 + i * step, bottom - shh / 2);
-    drawBlob(ctx, SCRATCH, W / 2, inner + shw / 2, cy, shw, shh, lineW * (0.4 + 0.6 * g), alpha * 0.75 * g, Math.min(1, alpha * 1.7) * g);
-  }
-}
-
-function drawCrowdMirror(now) {
-  const K = TUNE.kaleido, T = K.smooth;
-  // First person = the column against the mirror line. A new person only gets a column once their tracking has
-  // settled (a few pose events) — before that their measurements are just placeholders.
-  const list = Array.from(people.values()).filter(p => p.poseEvents >= 5).sort((a, b) => a.id - b.id);
+function drawCrowdWater(now) {
+  const K = TUNE.water, T = K.smooth;
+  // First person = the band nearest the viewer. A new person only gets a wave once their tracking has settled (a few
+  // pose events) — before that their measurements are just placeholders.
+  const list = Array.from(people.values()).filter(p => p.poseEvents >= 5).sort((a, b) => a.id - b.id).slice(0, MAX_WAVES);
   if (!list.length) return;
   const dt = Math.min(0.1, (typeof deltaTime === 'number' ? deltaTime : 16.7) / 1000); // seconds; capped so a stalled tab doesn't leap
+  const timeS = now / 1000;
 
   if (crowdInit) crowdS.update(list.length, T.crowd, dt); else { crowdS.snap(list.length); crowdInit = true; }
   const N = Math.max(1, crowdS.v);
 
+  // ---- each person's wave for this frame ----
+  const W = WaterGL;
+  W.p0.fill(0); W.p1.fill(0); W.p2.fill(0); W.p3.fill(0);
   list.forEach((p, i) => {
-    const fw = formWeights(p.m), d = p.d;
+    const d = p.d, m = p.m, fw = formWeights(m);
+    const life = lifeAlpha(p, now);
+    const mo = d.motion.v;
+    const targets = {
+      motion: m.motion, count: p.countTarget,
+      amp: lerp(K.ampCalm, K.ampSwell, mo) * (1 + K.stormAmpBoost * d.storm.v),
+      freq: lerp(K.freqCalm, K.freqSwell, mo) + K.stormFreqBoost * d.storm.v,
+      storm: m.storm
+    };
     if (!p.dInit) {
-      d.rank.snap(i + 1); d.motion.snap(p.m.motion); d.count.snap(p.countTarget);
+      d.rank.snap(i + 1); d.motion.snap(targets.motion); d.count.snap(targets.count);
       d.wC.snap(fw[0]); d.wS.snap(fw[1]); d.wT.snap(fw[2]);
+      d.amp.snap(targets.amp); d.freq.snap(targets.freq); d.storm.snap(targets.storm);
       p.dInit = true;
-      return;
+    } else {
+      d.rank.update(i + 1, T.rank, dt);
+      d.motion.update(targets.motion, T.motion, dt);
+      d.count.update(targets.count, T.count, dt);
+      d.wC.update(fw[0], T.form, dt); d.wS.update(fw[1], T.form, dt); d.wT.update(fw[2], T.form, dt);
+      d.amp.ud(targets.amp, T.ampUp, T.ampDown, dt);
+      d.freq.ud(targets.freq, T.freqUp, T.freqDown, dt);
+      d.storm.ud(targets.storm, T.stormUp, T.stormDown, dt);
     }
-    d.rank.update(i + 1, T.rank, dt);
-    d.motion.update(p.m.motion, T.motion, dt);
-    d.count.update(p.countTarget, T.count, dt);
-    d.wC.update(fw[0], T.form, dt); d.wS.update(fw[1], T.form, dt); d.wT.update(fw[2], T.form, dt);
+    const st = d.storm.v;
+    // Phase only ever moves forward. A storm makes the surge uneven (gusts) — the phase still never jumps.
+    const gust = 1 + K.gust * st * Math.sin(WTAU * 0.37 * timeS + p.id * 1.7);
+    p.phase += WTAU * d.freq.v * gust * dt;
+    for (let j = 0; j < 3; j++) p.chopPh[j] += WTAU * CHOP_RATE[j] * (0.35 + 1.0 * st) * dt;
+
+    const wsum = (d.wC.v + d.wS.v + d.wT.v) || 1;
+    const hue = lerp(K.hueStill, K.hueMoving, d.motion.v) / 360;
+    const o = i * 4;
+    W.p0[o] = d.amp.v; W.p0[o + 1] = constrain(d.count.v * K.crestsPerPoint * (1 + K.stormCrestBoost * st), 1.5, 20); W.p0[o + 2] = st; W.p0[o + 3] = p.phase;
+    W.p1[o] = d.wC.v / wsum; W.p1[o + 1] = d.wS.v / wsum; W.p1[o + 2] = d.wT.v / wsum; W.p1[o + 3] = life;
+    W.p2[o] = hue; W.p2[o + 1] = d.rank.v; W.p2[o + 2] = p.chopPh[0]; W.p2[o + 3] = p.chopPh[1];
+    W.p3[o] = p.chopPh[2];
   });
 
-  // Column width: as wide as will let every column fit in half the screen, but never so wide that the shapes
-  // stretch into flat ovals. (The outer edge of the last column lands exactly on the margin.)
-  const usableHalf = width / 2 - width * K.margin;
-  const target = Math.min(usableHalf / (N - 1 + K.overlap), height * K.maxBandFrac / K.overlap);
-  if (fitInit) fitS.update(target, T.fit, dt); else { fitS.snap(target); fitInit = true; }
-  const bw = fitS.v;
-
-  const ctx = drawingContext, timeS = now / 1000;
-  ctx.save();
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  for (let i = list.length - 1; i >= 0; i--) { // outermost first, so inner columns sit on top
-    const p = list[i];
-    const css = hsbToCss(lerp(K.hueStill, K.hueMoving, p.d.motion.v), K.saturation, K.brightness);
-    drawColumn(ctx, p, p.d.rank.v - 1, bw, K.opacity * lifeAlpha(p, now), css, timeS);
+  const ok = W.render({ count: list.length, N, sig: K.bandOverlap * 0.5 / N });
+  if (!ok) { // no WebGL: say so on screen rather than showing nothing
+    drawingContext.save(); drawingContext.fillStyle = '#fff'; drawingContext.font = '16px sans-serif';
+    drawingContext.fillText('The water needs WebGL: ' + W.error, 12, 90); drawingContext.restore();
   }
-  ctx.restore();
 }
 
 /* =============================
@@ -851,8 +950,7 @@ function resetAll() {
   try { stopTrackingImpl(); } catch (e) { }
   people.clear();
   nextPersonId = 1;
-  crowdInit = false; fitInit = false;
-  paramCache.clear();
+  crowdInit = false;
   latestPoses = [];
   if (window.EnergyBodiesDisplay) {
     try { EnergyBodiesDisplay.tracking(false); } catch (e) { }
