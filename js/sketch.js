@@ -64,10 +64,10 @@ const TUNE = {
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
     inkDensity: 1.1,        // ink layers (contour lines) per wave height: more = finer, busier lines
     inkLayers: 26,         // even layers of ink across the whole screen height: more = finer, busier bands (even where the water is flat)
-    // --- the two inks: dark = blue, light = pink. Each has its own hue (degrees: 0 red, 215 blue, 270 violet, 320 rose, 340 pink) and strength.
+    // --- the two inks: dark = blue, light = white (with pink coming in as people move). Each has its own hue (degrees: 0 red, 215 blue, 270 violet, 320 rose, 340 pink) and strength.
     //     Movement slides each ink from its "still" hue to its "moving" hue. Set a still and moving hue equal for a fixed color.
-    darkHueStill: 215, darkHueMoving: 265, darkSat: 0.55,   // dark ink: blue when still, toward violet when moving
-    lightHueStill: 330, lightHueMoving: 345, lightSat: 0.30, // light ink: pink when still, warmer pink when moving
+    darkHueStill: 215, darkHueMoving: 245, darkSat: 0.62,    // dark ink: blue when still, toward indigo when moving
+    lightHueStill: 205, lightHueMoving: 335, lightSat: 0.05, lightSatMoving: 0.20,   // light ink: near-white (a breath of blue) when still, warming to pink as people move
     grain: 0,              // optional paper speckle on the ink (0 = none: smooth, like water)
     dropSize: 0.62,        // size of each person's circular drop of ink, as a fraction of their band's height (0 = no circles)
     ripples: 1.0,          // how strongly each drop sends out its own concentric waves (0 = none; they overlap and interfere between drops)
@@ -114,7 +114,7 @@ const TUNE = {
     // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer. "Up" is
     // growing/speeding up, "Down" is settling; a storm builds fast and dies slowly.
     smooth: { rank: 2.4, crowd: 2.4, motion: 2.2, form: 2.2, count: 2.2,
-              ampUp: 1.8, ampDown: 3.0, freqUp: 2.0, freqDown: 3.0, stormUp: 1.6, stormDown: 4.0, dropUp: 3.0, dropDown: 0.5 }
+              ampUp: 1.8, ampDown: 3.0, freqUp: 2.0, freqDown: 3.0, stormUp: 1.6, stormDown: 4.0, dropUp: 0.2, dropDown: 0.5 }
   }
 };
 
@@ -717,7 +717,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
+uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uLSat1, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
@@ -806,13 +806,15 @@ float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.y
 // frequency, built from |x| so the picture stays an exact mirror. x = field, y = where up the screen this ink really is.
 // A person's drop of ink. Each has its own place (somewhere in their band, off to one side — the mirror gives it a twin), its own size
 // and a slightly irregular, slowly breathing outline, all drifting gently. The size grows a little with movement and fades with the person.
+// A sumi brush touching the water: the ink spreads out fast, overshoots a touch, and settles.
+float inkGrow(float age) { return (1.0 - exp(-age / 0.4)) * (1.0 + 0.10 * exp(-age * 0.9) * sin(age * 5.0)); }
 float dropCy(float rank) { return 2.0 * (rank - 0.5) / uN - 1.0; }
-void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float amp, out vec2 d, out float R, out float Rb) {
+void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float age, float amp, out vec2 d, out float R, out float Rb) {
   float asp = uRes.x / uRes.y;
   float bandH = 2.0 / uN;
   float sD = fract(sA * 7.31 + sB * 3.17);                         // two more fixed random numbers per person
   float sE = fract(sB * 5.73 + sC * 9.41);
-  float base = uDrop * bandH * 0.5 * (0.6 + 0.8 * sC) * (0.8 + 0.25 * amp) * life;
+  float base = uDrop * bandH * 0.5 * (0.6 + 0.8 * sC) * (0.8 + 0.25 * amp) * life * inkGrow(age);
   float cx = max((0.10 + 0.72 * sD) * asp + 0.06 * sin(0.17 * uWT + sB * TAU), base * 1.6 + 0.12);    // anywhere across the half-screen, never reaching the mirror line
   float cy = dropCy(rank) + (sB - 0.5) * 1.1 * bandH + 0.06 * sin(0.13 * uWT + sA * TAU);       // and may wander toward the neighbouring bands
   d = pa - vec2(cx, cy);
@@ -820,7 +822,8 @@ void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float
   float th = atan(d.y, d.x);
   // not a perfect circle: a smooth oval, stretched a little in its own direction, turning very slowly
   float e = 0.07 + 0.13 * sE;
-  R = base * (1.0 + e * cos(2.0 * (th - sB * 3.1416 - 0.06 * uWT)));
+  R = base * (1.0 + e * cos(2.0 * (th - sB * 3.1416 - 0.06 * uWT))
+                  + exp(-age / 1.5) * (0.035 * sin(5.0 * th + sA * TAU) + 0.03 * sin(9.0 * th + 1.7 * sB * TAU) + 0.02 * sin(13.0 * th + sC * TAU)));   // wet ink feathers irregularly at the edge at first, then smooths out
 }
 
 // The currents: a few slowly drifting whirlpools plus layers of sinusoidal drag, built from |x| so the picture stays an exact mirror.
@@ -854,13 +857,18 @@ vec3 inkAt(vec2 q, float wa, float wt) {
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
-    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP0[k].x, d, R, Rb);
+    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, uP0[k].x, d, R, Rb);
     float r = max(length(d), 0.0001);
     p += (sqrt(max(r * r - R * R, 0.0)) / r - 1.0) * d;             // the push: the ink is sampled from where it was before the drop pushed it aside
     float s = max(r / max(R, 0.02) - 1.0, 0.0);                      // how many drop-radii out from the rim
     float E = exp(-s / uRippleLen);
     float nR = clamp(1.1 * uP0[k].y, 3.0, 10.0);                     // more body points = more waves = more ripples
-    ripple -= uP1[k].w * (nR * uRippleLen + 0.6 * sin(0.35 * wt + uP3[k].y * TAU)) * E;   // closely spaced at the rim, spreading out and fading to exactly nothing with distance (so the far water never shifts); breathing slowly
+    ripple -= uP1[k].w * (nR * uRippleLen + 0.6 * sin(0.35 * wt + uP3[k].y * TAU)) * E;
+    // the touch: a ring of ripples runs outward from the drop, strongest at first and dying away, and drags the ink lines with it as it passes
+    float age = uP4[k].y;
+    float front = 0.4 + 1.7 * age;                                   // how far out the wavefront has got, in drop radii
+    float wave = exp(-s / 1.6) * exp(-age / 2.2) * (1.0 - smoothstep(front - 0.5, front, s)) * smoothstep(0.0, 0.15, age);
+    ripple += uP1[k].w * uP4[k].x * 0.9 * wave * sin(TAU * (1.1 * s - 0.9 * age));   // closely spaced at the rim, spreading out and fading to exactly nothing with distance (so the far water never shifts); breathing slowly
   }
   float tau = clamp((p.y + 1.0) * 0.5, 0.0, 1.0);
   float h = heightAt(p);
@@ -895,9 +903,9 @@ void main() {
   // ink floating on water: a translucent dark ink over a pale light one, thickest in the middle of each band and thinning
   // softly to its edges. uContrast sets how far apart the two tones are; each ink has its own color.
   float lumD = clamp(0.62 - 0.26 * uContrast, 0.0, 1.0);
-  float lumL = clamp(0.66 + 0.20 * uContrast, 0.0, 1.0);
+  float lumL = clamp(0.80 + 0.20 * uContrast, 0.0, 1.0);
   vec3 dark  = hsv2rgb(vec3(hueD, uDSat, lumD));                  // the dark ink: blue
-  vec3 light = hsv2rgb(vec3(hueL, uLSat, lumL));                  // the light ink: pink
+  vec3 light = hsv2rgb(vec3(hueL, mix(uLSat, uLSat1, mot), lumL)); // the light ink: white, warming to pink as people move
   float duty = uLine * (0.8 + 0.3 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // ink band width, varying a little so it isn't mechanical
   float darkW = 1.0 - smoothstep(duty - aa, duty + aa, d0);
   float thick = 1.0 - clamp(d0 / max(duty, 0.02), 0.0, 1.0);                                    // 1 in the middle of a band, 0 at its edge
@@ -906,22 +914,24 @@ void main() {
   // the drops themselves, seen in the same moving water: a soft ring at the rim and clear, still water inside
   vec2 pd = dragP(q, wa, uWT);
   float px = pix * 1.8;
-  float fillM = 0.0, ringM = 0.0;
+  float fillM = 0.0, ringM = 0.0, coreM = 0.0;
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
-    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP0[k].x, d, R, Rb);
+    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, uP0[k].x, d, R, Rb);
     float r = length(d);
     float edge = r - R;
     float fk = 1.0 - smoothstep(-px, px, edge);
     fillM = max(fillM, fk);
+    coreM = max(coreM, fk * exp(-uP4[k].y / 2.6) * (1.0 - 0.55 * clamp(r / max(R, 0.02), 0.0, 1.0)));   // the brush's dense ink, bleeding thinner from the rim inward
     ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
   }
   vec3 ringC = hsv2rgb(vec3(hueD, min(uDSat * 1.1, 1.0), max(lumD - 0.12, 0.0)));
-  vec3 inner = hsv2rgb(vec3(hueL, uLSat * 0.6, min(lumL + 0.05, 1.0)));
+  vec3 inner = hsv2rgb(vec3(hueL, mix(uLSat, uLSat1, mot) * 0.6, min(lumL + 0.05, 1.0)));
   ringM *= 1.0 - smoothstep(0.55, 0.95, fillM);                    // where two drops run together they become one pool: no rim inside it
   col = mix(col, ringC, ringM * 0.8);
   col = mix(col, inner, fillM);
+  col = mix(col, ringC * 0.45, coreM * 0.9);                       // the brush's dense, near-black ink
 
   // the water's surface: the waves tilt it, so it catches soft light and the odd glint, like the window reflected in a tray of water
   vec3 n = normalize(vec3(-g.x * 0.12, -g.y * 0.12, 1.0));
@@ -965,7 +975,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -988,7 +998,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uLSat1, K.lightSatMoving); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1016,6 +1026,7 @@ function drawCrowdWater(now) {
   list.forEach((p, i) => {
     const d = p.d, m = p.m, fw = formWeights(m);
     const life = lifeAlpha(p, now);
+    const missed = now - p.lastSeen, outA = missed > 250 ? clamp01(1 - (missed - 250) / (TUNE.tracking.personTimeoutMs - 250)) : 1;   // fade-out part of life only
     const mo = d.motion.v;
     const targets = {
       motion: m.motion, count: p.countTarget,
@@ -1026,7 +1037,7 @@ function drawCrowdWater(now) {
     if (!p.dInit) {
       d.rank.snap(i + 1); d.motion.snap(targets.motion); d.count.snap(targets.count);
       d.wC.snap(fw[0]); d.wS.snap(fw[1]); d.wT.snap(fw[2]);
-      d.amp.snap(targets.amp); d.freq.snap(targets.freq); d.storm.snap(targets.storm); d.drop.snap(0);
+      d.amp.snap(targets.amp); d.freq.snap(targets.freq); d.storm.snap(targets.storm); d.drop.snap(1); p.inkAge = 0;
       p.dInit = true;
     } else {
       d.rank.update(i + 1, T.rank, dt);
@@ -1036,9 +1047,10 @@ function drawCrowdWater(now) {
       d.amp.ud(targets.amp, T.ampUp, T.ampDown, dt);
       d.freq.ud(targets.freq, T.freqUp, T.freqDown, dt);
       d.storm.ud(targets.storm, T.stormUp, T.stormDown, dt);
-      d.drop.ud(life, T.dropUp, T.dropDown, dt);
+      d.drop.ud(outA, T.dropUp, T.dropDown, dt);
     }
     const st = d.storm.v;
+    p.inkAge += dt * Math.sqrt(K.speed);                                // seconds since this person's ink touched the water (runs with the speed dial, gently)
     // Phase only ever moves forward. A storm makes the surge uneven (gusts) — the phase still never jumps.
     const gust = 1 + K.gust * st * Math.sin(WTAU * 0.15 * timeS + p.id * 1.7);
     p.phase += WTAU * d.freq.v * gust * dt * K.speed;
@@ -1050,7 +1062,7 @@ function drawCrowdWater(now) {
     W.p0[o] = d.amp.v; W.p0[o + 1] = constrain(d.count.v * K.crestsPerPoint * (1 + K.stormCrestBoost * st), 1.5, 20); W.p0[o + 2] = st; W.p0[o + 3] = p.phase;
     W.p1[o] = d.wC.v / wsum; W.p1[o + 1] = d.wS.v / wsum; W.p1[o + 2] = d.wT.v / wsum; W.p1[o + 3] = life;
     W.p2[o] = hue; W.p2[o + 1] = d.rank.v; W.p2[o + 2] = p.chopPh[0]; W.p2[o + 3] = p.chopPh[1];
-    W.p4[o] = Math.min(life, Math.max(0, d.drop.v));                   // a drop grows slowly, and is exactly gone by the time its person is removed
+    W.p4[o] = Math.min(outA, Math.max(0, d.drop.v)); W.p4[o + 1] = p.inkAge;   // how present the drop is (exactly 0 as its person is removed) and how long ago it touched down
     W.p3[o] = p.chopPh[2];
     const hs = n => { const x = Math.sin((n + 1) * 12.9898 + p.id * 78.233) * 43758.5453; return x - Math.floor(x); };   // this person's own, fixed random numbers: where their drop sits, how big, what shape
     W.p3[o + 1] = hs(1); W.p3[o + 2] = hs(2); W.p3[o + 3] = hs(3);

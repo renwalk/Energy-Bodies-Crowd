@@ -14,8 +14,8 @@ following a single participant.
   closest person/skeleton pairs first, so when someone leaves it is the right person's band that goes.) A tracked person who
   isn't matched to a skeleton for `personTimeoutMs` (default 1s) is dropped.
 - **Ink marbling.** The whole screen is a tray of water with ink floating on it: two translucent inks, dark and light grey, in soft bands that
-  roll, fold and swirl, with a faint sheen where the waves catch the light. The dark ink is blue and the light ink is pink,
-  and movement slides each along its own blue-to-pink range. Each person's waves are the *contours* of the ink; a storm drags the
+  roll, fold and swirl, with a faint sheen where the waves catch the light. The dark ink is blue and the light ink is white
+  (warming to pink as people move). Each person's waves are the *contours* of the ink; a storm drags the
   whole sheet into folds and whirlpools, like a comb pulled through it.
   A vertical mirror line runs down the middle, and the image is an exact mirror across it. **Each person owns a
   horizontal band** of the water running the full width of the screen: the first person is the bottom band and every
@@ -130,9 +130,14 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   drop has its own place (off to one side of the mirror line, in their band), size and stretch, and — because the picture is mirrored —
   a twin on the other side, like butterfly wings. A drop grows slowly and a little with movement, and fades with the person.
   `dropSize` 0 = no drops; `ripples` 0 = no concentric waves.
-- `TUNE.water.darkHueStill` / `darkHueMoving` / `darkSat` and `lightHueStill` / `lightHueMoving` / `lightSat` — **the colors**: the dark and light inks each have
-  their own hue (degrees: 0 red, 215 blue, 270 violet, 320 rose, 340 pink) and strength (0 = grey, 1 = vivid). Movement slides each ink from
-  its still hue to its moving hue; set the two equal for a fixed color.
+- **A body entering = a sumi brush touching the water.** When someone first appears, their drop plays out like loaded ink meeting
+  the surface: the ink spreads outward fast (with a slight overshoot) while a dense, near-black core feathers irregularly at the edge;
+  a ring of ripples runs outward, dragging the ink lines with it, and dies away over a few seconds; and the core bleeds thinner from
+  the rim inward into a translucent pool. When they leave, the drop thins and fades. The clock runs with the `speed` dial (gently).
+- `TUNE.water.darkHueStill` / `darkHueMoving` / `darkSat` and `lightHueStill` / `lightHueMoving` / `lightSat` / `lightSatMoving` — **the colors**: the dark ink
+  (blue) and the light ink (near-white) each have their own hue (degrees: 0 red, 215 blue, 270 violet, 320 rose, 340 pink) and strength
+  (0 = grey, 1 = vivid). Movement slides each ink from its still hue to its moving hue; the light ink gains `lightSatMoving` pink as
+  people move. Set a still and moving hue equal for a fixed color.
 - `TUNE.water.sheen` / `grain` — how much the waves catch soft light on the surface (0 = flat), and optional paper speckle (0 = none).
 - `TUNE.water.dragCalm` / `dragStorm` / `flowCalm` / `flowStorm` — how far the ink is dragged (and how strongly the
   whirlpools twist) when calm / in a storm, and how fast those currents drift. Lower `dragStorm` for fewer whirlpools.
