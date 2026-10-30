@@ -36,11 +36,20 @@ const TUNE = {
     maxPeople: 12,          // PoseNet maxPoseDetections — also the most rings there can be
     scoreThreshold: 0.4,
     matchRadiusFrac: 0.3,   // fraction of video diagonal — how far a skeleton can drift frame-to-frame and still count as the same person before falling back to nearest-available matching (see matchPeopleToPoses)
-    personTimeoutMs: 1000   // how long a person can go undetected before their ring is dropped
+    personTimeoutMs: 1000,  // how long a person can go undetected before their ring is dropped
+    // --- keeping phantoms out: PoseNet regularly reports skeletons that aren't a person (partial bodies, reflections, a second copy of someone) ---
+    minPoseScore: 0.45,     // a skeleton whose overall confidence is below this is ignored
+    minKeypoints: 8,        // ...as is one with fewer confidently-seen body points than this...
+    minTorsoPoints: 2,      // ...or fewer than this many of the four torso points (both shoulders, both hips)
+    minSizeFrac: 0.12,      // ...or one that spans less than this fraction of the video diagonal (a tiny, far-off or fragmentary skeleton)
+    duplicateOverlap: 0.7,  // a skeleton lying mostly (this fraction) inside a higher-scoring one is treated as a second copy of that person, not a new person
+    confirmEvents: 8,       // a new skeleton must be seen in this many consecutive pose updates (about half a second) before it becomes a person
+    candidateGapMs: 400     // ...and is forgotten if it vanishes for this long first
   },
   point: {
     kpMinScore: 0.4,      // ignore keypoints PoseNet isn't confident about
     posSmoothing: 0.02,   // how quickly a point's tracked position catches up to the raw detection (lower = smoother, more lag)
+    velRefSmoothing: 0.22, // the smoothing of the reference position each point's SPEED is measured against — fixed, and separate from posSmoothing (which only shapes how points are drawn), so changing posSmoothing can't corrupt the movement readings
     velEMA: 0.18,          // smoothing on each point's own velocity reading (lower = smoother, more lag)
     velDeadzone: 0.0025,  // raw per-frame velocity below this is treated as 0 — absorbs PoseNet's baseline detection jitter on a still body
     velNormMin: 0.0,      // velocity (normalized by video diagonal per frame) that reads as "still"
@@ -52,7 +61,7 @@ const TUNE = {
     // --- the water: a flowing texture filling the screen. Each person owns a horizontal band of it. ---
     resolution: 0.75,       // GPU render size relative to the screen (1 = full; lower is faster and a little softer)
     maxPixels: 800000,      // never render more than this many pixels, however big the screen (the cost grows with pixels; a big display at 0.75 can be several million)
-    autoQuality: true,      // if the display can't keep up (under ~45 fps for a few seconds) it lowers its own render size until it can, so the motion stays fluid
+    autoQuality: true,      // if the display can't keep up (under ~45 fps for a few seconds) it lowers its own render size until it can, so the motion stays fluid; if it then holds 60 fps for a good while it cautiously tries sharper again (at most twice)
     speed: .02,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
     contrast: 0.55,         // MASTER CONTRAST: how far apart the dark and light inks are (0 = nearly the same, 0.55 = soft, translucent ink on water, 1.6 = deep charcoal on near-white). Live: - and =
     bandOverlap: 0.9,       // how softly one person's band blends into the next (bigger = wider blend)
@@ -144,6 +153,8 @@ let trackingStarted = false;
 
 let people = new Map(); // id -> Person
 let nextPersonId = 1;
+let candidates = [];   // skeletons seen but not yet trusted as a person (see TUNE.tracking.confirmEvents)
+const trackStats = { rejected: 0 };   // phantom skeletons turned away, for the diagnostic readout
 
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 
@@ -219,7 +230,8 @@ class Person {
   constructor(id, cx, cy) {
     this.id = id;
     this.hue = (id * 63) % 360; // used by the Control dashboard's crowd map only
-    this.tx = cx; this.ty = cy; // torso-weighted body center in video pixels — used for frame-to-frame matching
+    this.tx = cx; this.ty = cy; // torso-weighted body center in video pixels (smoothed like the points — for display)
+    this.cx = cx; this.cy = cy; // where PoseNet last actually DETECTED this person: what frame-to-frame matching uses, so the display smoothing can never make the tracker lose someone
     this.born = millis();
     this.lastSeen = 0;
     this.poseEvents = 0;
@@ -229,7 +241,7 @@ class Person {
     for (const name of KEYPOINT_NAMES) {
       // presence fades smoothly in/out instead of snapping with the raw PoseNet score,
       // so a keypoint flickering near the confidence threshold doesn't make the wave jump around.
-      this.points[name] = { x: cx, y: cy, vel: 0, raw: 0, rawPrev: 0, score: 0, presence: 0 };
+      this.points[name] = { x: cx, y: cy, vx: cx, vy: cy, vel: 0, raw: 0, rawPrev: 0, score: 0, presence: 0 };
     }
 
     // Movement summary, recomputed on every pose event (see updatePersonMetrics).
@@ -248,6 +260,24 @@ class Person {
     this.chopPh = [r() * Math.PI * 2, r() * Math.PI * 2, r() * Math.PI * 2];
     this.dInit = false;
   }
+}
+
+// How trustworthy a skeleton is as "a person": its confident points, torso points, and bounding box.
+function poseStats(pose) {
+  const T = TUNE.tracking, thr = TUNE.point.kpMinScore;
+  let n = 0, torso = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const k of pose.keypoints || []) {
+    if (k.score <= thr) continue;
+    n++;
+    if (k.part === 'leftShoulder' || k.part === 'rightShoulder' || k.part === 'leftHip' || k.part === 'rightHip') torso++;
+    x0 = Math.min(x0, k.position.x); y0 = Math.min(y0, k.position.y); x1 = Math.max(x1, k.position.x); y1 = Math.max(y1, k.position.y);
+  }
+  const w = Math.max(0, x1 - x0), h = Math.max(0, y1 - y0);
+  return { n, torso, x0, y0, x1, y1, area: w * h, size: Math.hypot(w, h), score: pose.score == null ? 1 : pose.score };
+}
+function looksLikeAPerson(st) {
+  const T = TUNE.tracking, diag = Math.hypot(video?.width || 960, video?.height || 540);
+  return st.score >= T.minPoseScore && st.n >= T.minKeypoints && st.torso >= T.minTorsoPoints && st.size >= T.minSizeFrac * diag;
 }
 
 function personCenter(pose) {
@@ -272,9 +302,22 @@ function matchPeopleToPoses(poses, now) {
   const vw = video?.width || 960, vh = video?.height || 540;
   const matchRadius = Math.hypot(vw, vh) * TUNE.tracking.matchRadiusFrac;
 
-  const detections = poses
-    .map(r => ({ pose: r.pose, center: personCenter(r.pose) }))
+  // Keep only skeletons that look like a person, strongest first, and drop any that is mostly inside a stronger one (a second copy of the same person).
+  let detections = poses
+    .map(r => { const st = poseStats(r.pose); return { pose: r.pose, center: personCenter(r.pose), st }; })
     .filter(d => d.center);
+  const before = detections.length;
+  detections = detections.filter(d => looksLikeAPerson(d.st)).sort((a, b) => b.st.score - a.st.score);
+  const kept = [];
+  for (const d of detections) {
+    const dup = kept.some(k => {
+      const iw = Math.min(k.st.x1, d.st.x1) - Math.max(k.st.x0, d.st.x0), ih = Math.min(k.st.y1, d.st.y1) - Math.max(k.st.y0, d.st.y0);
+      return iw > 0 && ih > 0 && (iw * ih) / Math.max(1, d.st.area) > TUNE.tracking.duplicateOverlap;
+    });
+    if (!dup) kept.push(d);
+  }
+  trackStats.rejected += before - kept.length;
+  detections = kept;
 
   const used = new Array(detections.length).fill(false);
   const unmatchedPeople = [];
@@ -285,7 +328,7 @@ function matchPeopleToPoses(poses, now) {
   const pairs = [];
   for (const person of people.values()) {
     for (let i = 0; i < detections.length; i++) {
-      const d = dist(person.tx, person.ty, detections[i].center.x, detections[i].center.y);
+      const d = dist(person.cx, person.cy, detections[i].center.x, detections[i].center.y);
       if (d < matchRadius) pairs.push([d, person, i]);
     }
   }
@@ -295,7 +338,7 @@ function matchPeopleToPoses(poses, now) {
     if (used[i] || matched.has(person)) continue;
     used[i] = true;
     matched.add(person);
-    updatePersonPoints(person, detections[i].pose, now);
+    updatePersonPoints(person, detections[i].pose, now, detections[i].center);
   }
   for (const person of people.values()) if (!matched.has(person)) unmatchedPeople.push(person);
 
@@ -315,24 +358,47 @@ function matchPeopleToPoses(poses, now) {
     for (let pi = 0; pi < unmatchedPeople.length; pi++) {
       const person = unmatchedPeople[pi];
       for (let di = 0; di < remaining.length; di++) {
-        const d = dist(person.tx, person.ty, detections[remaining[di]].center.x, detections[remaining[di]].center.y);
+        const d = dist(person.cx, person.cy, detections[remaining[di]].center.x, detections[remaining[di]].center.y);
         if (d < bd) { bd = d; bp = pi; bi = di; }
       }
     }
     const person = unmatchedPeople[bp];
     const detIdx = remaining[bi];
     used[detIdx] = true;
-    updatePersonPoints(person, detections[detIdx].pose, now);
+    updatePersonPoints(person, detections[detIdx].pose, now, detections[detIdx].center);
     unmatchedPeople.splice(bp, 1);
     remaining.splice(bi, 1);
   }
 
-  // Any detections still left over are genuinely new people.
+  // Any detections still left over might be new people — but a phantom flickers, so a new skeleton is only a candidate until it has been
+  // seen steadily for confirmEvents updates in a row. Only then does it become a person (and its ink touch).
+  const seenCands = new Set();
+  const candPairs = [];
+  for (const i of remaining) for (const c of candidates) {
+    const d = dist(c.cx, c.cy, detections[i].center.x, detections[i].center.y);
+    if (d < matchRadius) candPairs.push([d, i, c]);
+  }
+  candPairs.sort((a, b) => a[0] - b[0]);
+  const usedDet = new Set();
+  for (const [, i, c] of candPairs) {
+    if (usedDet.has(i) || seenCands.has(c)) continue;
+    usedDet.add(i); seenCands.add(c);
+    c.cx = detections[i].center.x; c.cy = detections[i].center.y; c.pose = detections[i].pose; c.center = detections[i].center;
+    c.count++; c.lastSeen = now;
+  }
   for (const i of remaining) {
-    if (people.size >= TUNE.tracking.maxPeople) break;
-    const person = new Person(nextPersonId++, detections[i].center.x, detections[i].center.y);
-    people.set(person.id, person);
-    updatePersonPoints(person, detections[i].pose, now);
+    if (usedDet.has(i)) continue;
+    candidates.push({ cx: detections[i].center.x, cy: detections[i].center.y, pose: detections[i].pose, center: detections[i].center, count: 1, lastSeen: now });
+  }
+  for (let ci = candidates.length - 1; ci >= 0; ci--) {
+    const c = candidates[ci];
+    if (now - c.lastSeen > TUNE.tracking.candidateGapMs) { candidates.splice(ci, 1); trackStats.rejected++; continue; }
+    if (c.count >= TUNE.tracking.confirmEvents && people.size < TUNE.tracking.maxPeople) {
+      const person = new Person(nextPersonId++, c.cx, c.cy);
+      people.set(person.id, person);
+      updatePersonPoints(person, c.pose, now, c.center);
+      candidates.splice(ci, 1);
+    }
   }
 
   // Drop anyone we haven't seen in a while (genuinely gone — occluded too long, or left frame).
@@ -346,9 +412,10 @@ function matchPeopleToPoses(poses, now) {
 /* =============================
    5) POSE → PER-POINT POSITION + VELOCITY
    ============================= */
-function updatePersonPoints(person, pose, now) {
+function updatePersonPoints(person, pose, now, center) {
   if (!pose || !pose.keypoints) return;
   person.lastSeen = now;
+  if (center) { person.cx = center.x; person.cy = center.y; }
 
   const P = TUNE.point;
   const diag = Math.hypot(video?.width || 960, video?.height || 540) || 1;
@@ -363,11 +430,13 @@ function updatePersonPoints(person, pose, now) {
       // A keypoint that's new (or has been missing for a while) has no meaningful "previous position": it starts
       // at the person's center, or wherever it was last seen. Measuring velocity from there would read the jump to
       // its real position as violent movement — a still person would look like they were thrashing for seconds.
-      if (pt.presence < 0.15) { pt.x = k.position.x; pt.y = k.position.y; }
-      const dx = (k.position.x - pt.x) / diag;
-      const dy = (k.position.y - pt.y) / diag;
+      if (pt.presence < 0.15) { pt.x = k.position.x; pt.y = k.position.y; pt.vx = k.position.x; pt.vy = k.position.y; }
+      const dx = (k.position.x - pt.vx) / diag;
+      const dy = (k.position.y - pt.vy) / diag;
       const rawVel = Math.max(0, Math.hypot(dx, dy) - P.velDeadzone); // absorb baseline detection jitter before it ever reaches the smoothing
 
+      pt.vx = lerp(pt.vx, k.position.x, P.velRefSmoothing);
+      pt.vy = lerp(pt.vy, k.position.y, P.velRefSmoothing);
       pt.x = lerp(pt.x, k.position.x, P.posSmoothing);
       pt.y = lerp(pt.y, k.position.y, P.posSmoothing);
       pt.vel = lerp(pt.vel, rawVel, P.velEMA);
@@ -656,7 +725,7 @@ function drawDebug() {
   if (worst > dbgWorst || now - dbgWorstAt > 5000) { dbgWorst = worst; dbgWorstAt = now; }
   const lines = [
     `fps ${Math.round(frameRate())}   worst frame (1s) ${Math.round(worst)} ms   worst (5s) ${Math.round(dbgWorst)} ms   render ${WaterGL.w}x${WaterGL.h} (quality ${WaterGL.quality.toFixed(2)})`,
-    `people ${people.size}   ids created ${nextPersonId - 1}   poses this frame ${latestPoses.length}`
+    `people ${people.size}   ids created ${nextPersonId - 1}   skeletons this frame ${latestPoses.length}   phantoms turned away ${trackStats.rejected}   waiting to be confirmed ${candidates.length}`
   ];
   for (const p of Array.from(people.values()).sort((a, b) => a.id - b.id)) {
     lines.push(`#${p.id}  points ${p.m.bodyPoints}  motion ${p.m.motion.toFixed(2)}  storm ${p.m.storm.toFixed(2)}  amp ${p.d.amp.v.toFixed(2)}  waves ${p.d.count.v.toFixed(1)}  age ${(p.inkAge || 0).toFixed(1)}s`);
@@ -981,7 +1050,7 @@ void main() {
 }`;
 
 const WaterGL = {
-  quality: 1, qAcc: 0, qN: 0, qWarm: 0,
+  quality: 1, qAcc: 0, qN: 0, qWarm: 0, qGood: 0, qUpFails: 0, qLastUp: false,
   tried: false, ok: false, canvas: null, gl: null, prog: null, u: {}, w: 0, h: 0, error: '',
   p0: new Float32Array(MAX_WAVES * 4), p1: new Float32Array(MAX_WAVES * 4), p2: new Float32Array(MAX_WAVES * 4), p3: new Float32Array(MAX_WAVES * 4), p4: new Float32Array(MAX_WAVES * 4),
 
@@ -1031,7 +1100,14 @@ const WaterGL = {
     if (this.qN < 90) return;
     const avg = this.qAcc / this.qN;
     this.qAcc = 0; this.qN = 0;
-    if (avg > 22 && this.quality > 0.35) { this.quality = Math.max(0.35, this.quality * 0.82); this.qWarm = 45; console.log('[WATER] running slow (' + Math.round(1000 / avg) + ' fps): render quality now ' + this.quality.toFixed(2)); }
+    if (avg > 22) {                                                  // too slow: step down (and if that was a try at stepping up, note the failure)
+      this.qGood = 0;
+      if (this.qLastUp) { this.qUpFails++; this.qLastUp = false; }
+      if (this.quality > 0.35) { this.quality = Math.max(0.35, this.quality * 0.82); this.qWarm = 45; console.log('[WATER] running slow (' + Math.round(1000 / avg) + ' fps): render quality now ' + this.quality.toFixed(2)); }
+    } else if (avg < 18.5) {                                         // holding 60 fps for a good while: cautiously try a little sharper (at most twice, so it can't flip-flop)
+      this.qLastUp = false;
+      if (++this.qGood >= 6 && this.quality < 1 && this.qUpFails < 2) { this.quality = Math.min(1, this.quality / 0.82); this.qWarm = 45; this.qGood = 0; this.qLastUp = true; console.log('[WATER] steady: trying render quality ' + this.quality.toFixed(2)); }
+    }
   },
 
   // Renders the water for this frame into the p5 canvas.
@@ -1170,6 +1246,7 @@ function resetAll() {
   if (TUNE.autoRun) { console.log('[DISPLAY] autoRun is on — ignoring reset'); return; }
   try { stopTrackingImpl(); } catch (e) { }
   people.clear();
+  candidates = [];
   nextPersonId = 1;
   crowdInit = false;
   latestPoses = [];

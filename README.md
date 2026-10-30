@@ -105,6 +105,13 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
 
 - `TUNE.tracking.maxPeople` — hard cap on simultaneously tracked people (also passed to PoseNet as
   `maxPoseDetections`). Lower this on slower hardware.
+- **Phantom filtering** (`TUNE.tracking.minPoseScore` / `minKeypoints` / `minTorsoPoints` / `minSizeFrac` / `duplicateOverlap` / `confirmEvents` /
+  `candidateGapMs`) — PoseNet regularly reports skeletons that aren't a person: partial bodies, reflections, tiny far-off fragments, or a second
+  copy of someone already tracked. A skeleton only counts if it is confident enough, has enough body points (including the torso), is big
+  enough, and isn't mostly inside a stronger skeleton; and a new one must then be seen steadily for `confirmEvents` updates (about half a second)
+  before it becomes a person at all (so no ink drop for a flicker). Press `d` to see `phantoms turned away`, `waiting to be confirmed`, and
+  `ids created` (it should stay close to the number of people who actually came and went). If real people are being ignored — especially ones far
+  from the camera — lower `minSizeFrac` / `minKeypoints`; if phantoms still get through, raise them.
 - `TUNE.tracking.matchRadiusFrac` / `personTimeoutMs` — how forgiving the tracker is about people moving
   quickly or briefly occluding each other.
 - `TUNE.point.posSmoothing` — how snappy vs. smoothed each tracked keypoint is relative to the raw detection.
