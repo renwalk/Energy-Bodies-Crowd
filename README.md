@@ -13,8 +13,8 @@ following a single participant.
   person's band of water from swapping with someone else's as poses shuffle order frame to frame. (Matching takes the
   closest person/skeleton pairs first, so when someone leaves it is the right person's band that goes.) A tracked person who
   isn't matched to a skeleton for `personTimeoutMs` (default 1s) is dropped.
-- **Ink marbling.** The whole screen is a sheet of marbled paper: two grainy inks, dark and light grey, in bands that
-  roll, fold and swirl, like paper dipped on a tray of floating ink. A little color (`inkTint`) shifts from blue to rose
+- **Ink marbling.** The whole screen is a tray of water with ink floating on it: two translucent inks, dark and light grey, in soft bands that
+  roll, fold and swirl, with a faint sheen where the waves catch the light. A little color (`inkTint`) shifts from blue to rose
   with movement. Each person's waves are the *contours* of the ink; a storm drags the
   whole sheet into folds and whirlpools, like a comb pulled through it.
   A vertical mirror line runs down the middle, and the image is an exact mirror across it. **Each person owns a
@@ -110,7 +110,7 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   raise it if small movements already read as fully in motion.
 - **`TUNE.water.speed` and `TUNE.water.contrast` — the two master dials.** `speed` (default 1) scales how fast
   everything moves: waves, ripples and ink drift (0.5 = half speed). `contrast` (default 1) sets how bold the ink is:
-  how far apart the dark and light inks are (0 = nearly flat grey, up to 1.6 = deep charcoal on near-white). **Both can be changed live on the display machine:** press `,` / `.` for slower /
+  how far apart the dark and light inks are (default 0.55 = soft, translucent; up to 1.6 = deep charcoal on near-white). **Both can be changed live on the display machine:** press `,` / `.` for slower /
   faster and `-` / `=` for softer / bolder contrast — a small readout appears for a couple of seconds. Live changes
   last until reload, so copy the value you like into `TUNE.water`.
 - `TUNE.water.resolution` — GPU render size relative to the screen (0.75 default). The biggest performance lever.
@@ -123,7 +123,7 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   smooth when calm).
 - `TUNE.water.inkDensity` / `inkLayers` / `inkLine` — how many ink bands follow each wave, how many even layers fill the
   screen height (more = finer stripes), and how wide the dark band is (0.25 = half dark, half light).
-- `TUNE.water.inkTint` / `grain` — how much color shows through the grey (0 = pure grey) and how strong the paper speckle is.
+- `TUNE.water.inkTint` / `sheen` / `grain` — how much color shows through the grey (0 = pure grey), how much the waves catch soft light on the surface (0 = flat), and optional paper speckle (0 = none).
 - `TUNE.water.dragCalm` / `dragStorm` / `flowCalm` / `flowStorm` — how far the ink is dragged (and how strongly the
   whirlpools twist) when calm / in a storm, and how fast those currents drift. Lower `dragStorm` for fewer whirlpools.
 - `TUNE.water.bandOverlap` — how softly one person's band blends into the next.

@@ -1,7 +1,7 @@
 /* ============================================================================
-   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v11: two-tone ink marbling)
-   One image for the whole room: the screen is a sheet of marbled paper — bands of a dark and a
-   light grainy ink that flow, fold and swirl into each other.
+   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v12: ink floating on water)
+   One image for the whole room: the screen is a sheet of ink floating on water — bands of a dark and a
+   light translucent ink that flow, fold and swirl into each other.
      - PoseNet runs in 'multiple' detection mode and a lightweight nearest-neighbor
        tracker gives each person a stable id across frames
      - Each person owns a HORIZONTAL BAND of the sheet, running the full width of the
@@ -49,7 +49,7 @@ const TUNE = {
     // --- the water: a flowing texture filling the screen. Each person owns a horizontal band of it. ---
     resolution: 0.75,       // GPU render size relative to the screen (1 = full; lower is faster and a little softer)
     speed: .2,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
-    contrast: 1.0,          // MASTER CONTRAST: how far apart the dark and light inks are (0 = nearly flat grey, 1 = as designed, 1.6 = deep charcoal on near-white). Live: - and =
+    contrast: 0.55,         // MASTER CONTRAST: how far apart the dark and light inks are (0 = nearly the same, 0.55 = soft, translucent ink on water, 1.6 = deep charcoal on near-white). Live: - and =
     bandOverlap: 0.9,       // how softly one person's band blends into the next (bigger = wider blend)
     steepness: 0.6,         // how steep a full-size wave is (slope: height / half-wavelength). Higher = rougher, brighter caustics
     hMax: 1.5,              // soft ceiling on wave height, so even a violent storm stays sane
@@ -64,8 +64,9 @@ const TUNE = {
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
     inkDensity: 1.1,        // ink layers (contour lines) per wave height: more = finer, busier lines
     inkLayers: 26,         // even layers of ink across the whole screen height: more = finer, busier bands (even where the water is flat)
-    inkTint: 0.14,         // how much color shows through the grey inks (0 = pure grey; the tint shifts blue -> rose with movement)
-    grain: 1.0,            // paper grain / speckle on the ink (0 = none)
+    inkTint: 0.13,         // how much color shows through the grey inks (0 = pure grey; the tint shifts blue -> rose with movement)
+    grain: 0,              // optional paper speckle on the ink (0 = none: smooth, like water)
+    sheen: 0.4,            // how much the waves catch soft light and glints on the water's surface (0 = flat)
     inkLine: 0.29,          // width of the dark ink bands as a fraction of a layer (0.25 = half dark, half light)
     dragCalm: 0.09,         // how far the ink is dragged around when calm: gentle S-curves...
     dragStorm: 0.22,        // ...and in a full storm: folds and whirlpools
@@ -711,7 +712,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uContrast, uTint, uGrain;
+uniform float uContrast, uTint, uGrain, uSheen;
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
@@ -831,22 +832,27 @@ void main() {
 
   // contour lines of the field, like the lines in marbled paper: u counts ink layers, aa is how wide one pixel is in layers
   float u = f0.x * uDens + f0.y * uLayers;                         // the waves' own contours, plus even layers of ink poured down the screen — both dragged around together
-  float aa = clamp(length(g) * uDens * pix * 0.8, 0.018, 0.35);   // never razor sharp: a soft, feathered edge, like ink on paper
+  float aa = clamp(length(g) * uDens * pix * 0.8, 0.05, 0.35);   // never sharp: ink spreads softly into the water
   float s0 = fract(u);
   float d0 = min(s0, 1.0 - s0);                                    // distance (in layers) to the nearest whole layer
 
-  // two inks only, like the marbled paper: a dark one and a light one in bands of roughly equal width, no outlines.
-  // uContrast sets how far apart the two tones are. uTint lets a little of the stillness->motion color show through the grey.
+  // ink floating on water: a translucent dark ink over a pale light one, thickest in the middle of each band and thinning
+  // softly to its edges. uContrast sets how far apart the two tones are; uTint lets a little of the stillness->motion color show.
   float lumD = clamp(0.62 - 0.26 * uContrast, 0.0, 1.0);
   float lumL = clamp(0.66 + 0.20 * uContrast, 0.0, 1.0);
   vec3 dark  = hsv2rgb(vec3(hue, uTint * 1.3, lumD));
   vec3 light = hsv2rgb(vec3(hue, uTint * 0.55, lumL));
-  float duty = uLine * (0.8 + 0.3 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // dark band width, varying a little so it isn't mechanical
+  float duty = uLine * (0.8 + 0.3 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // ink band width, varying a little so it isn't mechanical
   float darkW = 1.0 - smoothstep(duty - aa, duty + aa, d0);
-  vec3 col = mix(light, dark, darkW);
-  // paper grain: fine speckle that lies on the dark ink (static, like the paper itself; mirrored like everything else)
-  float grain = hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x) * 1.3, gl_FragCoord.y * 1.3 + 17.0)) - 0.5;
-  col += grain * (0.05 + 0.13 * darkW) * uGrain;
+  float thick = 1.0 - clamp(d0 / max(duty, 0.02), 0.0, 1.0);                                    // 1 in the middle of a band, 0 at its edge
+  vec3 col = mix(light, dark, darkW * (0.72 + 0.28 * thick));
+
+  // the water's surface: the waves tilt it, so it catches soft light and the odd glint, like the window reflected in a tray of water
+  vec3 n = normalize(vec3(-g.x * 0.12, -g.y * 0.12, 1.0));
+  float tilt = dot(n, normalize(vec3(0.0, 0.6, 0.8)));
+  col *= 1.0 + uSheen * 0.22 * (tilt - 0.8);
+  col += uSheen * 0.22 * pow(max(dot(n, normalize(vec3(0.0, 0.35, 0.94))), 0.0), 90.0);
+  col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x) * 1.3, gl_FragCoord.y * 1.3 + 17.0)) - 0.5) * (0.04 + 0.1 * darkW) * uGrain;   // optional speckle (grain 0 = none)
 
   col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x), gl_FragCoord.y)) - 0.5) / 255.0;   // dither (mirrored, like everything else)
   gl_FragColor = vec4(col, 1.0);
@@ -882,7 +888,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uSheen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -905,7 +911,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
