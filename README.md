@@ -123,10 +123,13 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   smooth when calm).
 - `TUNE.water.inkDensity` / `inkLayers` / `inkLine` — how many ink bands follow each wave, how many even layers fill the
   screen height (more = finer stripes), and how wide the dark band is (0.25 = half dark, half light).
-- `TUNE.water.dropSize` / `dropRing` — **one drop of ink per person**: a clear, softly oval pool with a dark ring, the ink crowding and
-  wrapping around its rim, like a drop on a tray of marbling water. Each person's drop has its own place (somewhere in their
-  band, off to one side), size and stretch, drifts slowly, and — because the picture is mirrored — has a twin on the other side,
-  like butterfly wings. The drop grows a little with movement and fades with the person. `dropSize` 0 = no drops.
+- `TUNE.water.dropSize` / `dropRing` / `ripples` / `rippleReach` — **one drop of ink per person**, living *inside* the flowing water: the
+  currents carry and bend each drop (so its rim is never a perfect shape and drifts), the ink bands wrap and crowd around its rim as if
+  it had been pushed aside, and each drop sends out its own concentric ripples (more body points = more ripples). Where drops overlap
+  their ripples interfere, so every extra person adds a new set of overlapping waves; drops that run together become one pool. Each
+  drop has its own place (off to one side of the mirror line, in their band), size and stretch, and — because the picture is mirrored —
+  a twin on the other side, like butterfly wings. A drop grows slowly and a little with movement, and fades with the person.
+  `dropSize` 0 = no drops; `ripples` 0 = no concentric waves.
 - `TUNE.water.inkTint` / `sheen` / `grain` — how much color shows through the grey (0 = pure grey), how much the waves catch soft light on the surface (0 = flat), and optional paper speckle (0 = none).
 - `TUNE.water.dragCalm` / `dragStorm` / `flowCalm` / `flowStorm` — how far the ink is dragged (and how strongly the
   whirlpools twist) when calm / in a storm, and how fast those currents drift. Lower `dragStorm` for fewer whirlpools.

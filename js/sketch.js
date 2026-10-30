@@ -67,7 +67,9 @@ const TUNE = {
     inkTint: 0.13,         // how much color shows through the grey inks (0 = pure grey; the tint shifts blue -> rose with movement)
     grain: 0,              // optional paper speckle on the ink (0 = none: smooth, like water)
     dropSize: 0.62,        // size of each person's circular drop of ink, as a fraction of their band's height (0 = no circles)
-    dropRing: 0.012,       // weight of the dark ring around each drop
+    ripples: 1.0,          // how strongly each drop sends out its own concentric waves (0 = none; they overlap and interfere between drops)
+    rippleReach: 1.0,      // how far those ripples reach, in drop-radii
+    dropRing: 0.009,       // weight of the dark ring around each drop
     sheen: 0.4,            // how much the waves catch soft light and glints on the water's surface (0 = flat)
     inkLine: 0.29,          // width of the dark ink bands as a fraction of a layer (0.25 = half dark, half light)
     dragCalm: 0.09,         // how far the ink is dragged around when calm: gentle S-curves...
@@ -110,8 +112,8 @@ const TUNE = {
     fadeInMs: 1200,         // how slowly a newly detected person's wave builds
     // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer. "Up" is
     // growing/speeding up, "Down" is settling; a storm builds fast and dies slowly.
-    smooth: { rank: 1.4, crowd: 1.4, motion: 2.2, form: 2.2, count: 2.2,
-              ampUp: 1.8, ampDown: 3.0, freqUp: 2.0, freqDown: 3.0, stormUp: 1.6, stormDown: 4.0 }
+    smooth: { rank: 2.4, crowd: 2.4, motion: 2.2, form: 2.2, count: 2.2,
+              ampUp: 1.8, ampDown: 3.0, freqUp: 2.0, freqDown: 3.0, stormUp: 1.6, stormDown: 4.0, dropUp: 3.0, dropDown: 0.5 }
   }
 };
 
@@ -230,7 +232,7 @@ class Person {
     // Values actually drawn, each gliding toward its target: this person's patch of water, color, how many crests,
     // the mix of wave profiles (round / flat-topped / pointed), wave height, how often crests pass, and the storm.
     this.d = { rank: new Smooth(1), motion: new Smooth(0), count: new Smooth(1), wC: new Smooth(1), wS: new Smooth(0), wT: new Smooth(0),
-               amp: new Smooth(0), freq: new Smooth(0), storm: new Smooth(0) };
+               amp: new Smooth(0), freq: new Smooth(0), storm: new Smooth(0), drop: new Smooth(0) };
     // Wave phases only ever move forward (integrated), so changing speed can't make the water jump. The chop phases
     // start at fixed random offsets so every person's crossing waves differ.
     const r = mulberry32(id * 7919 + 13);
@@ -714,12 +716,13 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uContrast, uTint, uGrain, uSheen, uDrop, uDropRing;   // drops: size (fraction of a band's height, 0 = none), ring weight
+uniform float uContrast, uTint, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
 uniform vec4 uP2[MAXW];   // hue (0-1), rank (1 = the bottom band), chop phase 0, chop phase 1
-uniform vec4 uP3[MAXW];   // chop phase 2
+uniform vec4 uP3[MAXW];   // chop phase 2, this person's three fixed random numbers
+uniform vec4 uP4[MAXW];   // how grown this person's drop of ink is (0-1)
 const float TAU = 6.2831853;
 
 float tanhf(float x) { x = clamp(x, -9.0, 9.0); float e = exp(2.0 * x); return (e - 1.0) / (e + 1.0); }
@@ -819,17 +822,10 @@ void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float
   R = base * (1.0 + e * cos(2.0 * (th - sB * 3.1416 - 0.06 * uWT)));
 }
 
-vec2 inkAt(vec2 q, float wa, float wt) {
-  vec2 p0 = vec2(sqrt(q.x * q.x + 0.0016) - 0.04, q.y);
-  vec2 p = p0;
-  // each drop pushes the ink outward, so the bands wrap and crowd around its rim (the ink is sampled from where it was before the push)
-  for (int k = 0; k < MAXW; k++) {
-    if (k >= uCount) break;
-    vec2 d; float R, Rb;
-    dropAt(vec2(sqrt(q.x * q.x + 0.0001), q.y), uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP1[k].w, uP0[k].x, d, R, Rb);   // |x| rounded only a hair, so the circle is round and the mirror line has no crease
-    float r = max(length(d), 0.0001);
-    p += (sqrt(max(r * r - R * R, 0.0)) / r - 1.0) * d;
-  }
+// The currents: a few slowly drifting whirlpools plus layers of sinusoidal drag, built from |x| so the picture stays an exact mirror.
+// Returns the place the ink at q was before the currents moved it.
+vec2 dragP(vec2 q, float wa, float wt) {
+  vec2 p = vec2(sqrt(q.x * q.x + 0.0016) - 0.04, q.y);
   // whirlpools: a few slowly drifting vortices twist the ink around themselves (a calm sea barely turns, a storm winds spirals)
   for (int i = 0; i < 3; i++) {
     float fi = float(i);
@@ -842,9 +838,32 @@ vec2 inkAt(vec2 q, float wa, float wt) {
   p += wa * vec2(sin(p.y * 2.3 + wt + 1.0), sin(p.x * 2.9 - 0.8 * wt));
   p += 0.55 * wa * vec2(sin(p.y * 4.6 - 1.3 * wt + 2.0), sin(p.x * 5.3 + 0.9 * wt + 4.0));
   p += 0.30 * wa * vec2(sin(p.y * 8.9 + 1.7 * wt), sin(p.x * 9.7 - 1.1 * wt + 1.0));
+  return p;
+}
+
+// The ink at q: x = the waves' height (normalised by wave size, about -1..1 per wave) read after the whole surface has been moved
+// around; y = where up the screen this ink really is; z = extra ink layers from the drops' own ripples.
+// The drops sit INSIDE the currents: the currents carry and bend them (so their rims are never perfect, and drift), each drop pushes the
+// ink outward so the waves wrap and crowd around its rim, and each sends out its own concentric ripples. Where drops overlap the ripples
+// add together into interference — each extra person adds new waves.
+vec3 inkAt(vec2 q, float wa, float wt) {
+  vec2 pd = dragP(q, wa, wt);
+  vec2 p = pd;
+  float ripple = 0.0;
+  for (int k = 0; k < MAXW; k++) {
+    if (k >= uCount) break;
+    vec2 d; float R, Rb;
+    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP0[k].x, d, R, Rb);
+    float r = max(length(d), 0.0001);
+    p += (sqrt(max(r * r - R * R, 0.0)) / r - 1.0) * d;             // the push: the ink is sampled from where it was before the drop pushed it aside
+    float s = max(r / max(R, 0.02) - 1.0, 0.0);                      // how many drop-radii out from the rim
+    float E = exp(-s / uRippleLen);
+    float nR = clamp(1.1 * uP0[k].y, 3.0, 10.0);                     // more body points = more waves = more ripples
+    ripple -= uP1[k].w * (nR * uRippleLen + 0.6 * sin(0.35 * wt + uP3[k].y * TAU)) * E;   // closely spaced at the rim, spreading out and fading to exactly nothing with distance (so the far water never shifts); breathing slowly
+  }
   float tau = clamp((p.y + 1.0) * 0.5, 0.0, 1.0);
   float h = heightAt(p);
-  return vec2(h / (lookAt(tau).z + 0.02), tau);
+  return vec3(h / (lookAt(tau).z + 0.02), tau, ripple * uRipple);
 }
 
 void main() {
@@ -854,17 +873,19 @@ void main() {
 
   vec3 lk0 = lookAt(clamp((q.y + 1.0) * 0.5, 0.0, 1.0));
   float wa = uWarp0 + uWarp1 * lk0.y;                              // a storm drags the ink much further
-  vec2 f0 = inkAt(q, wa, uWT);
-  float fxp = inkAt(q + vec2(e, 0.0), wa, uWT).x, fxm = inkAt(q - vec2(e, 0.0), wa, uWT).x;
-  float fyp = inkAt(q + vec2(0.0, e), wa, uWT).x, fym = inkAt(q - vec2(0.0, e), wa, uWT).x;
-  vec2 g = vec2(fxp - fxm, fyp - fym) / (2.0 * e);
+  vec3 f0 = inkAt(q, wa, uWT);
+  vec3 fxp = inkAt(q + vec2(e, 0.0), wa, uWT), fxm = inkAt(q - vec2(e, 0.0), wa, uWT);
+  vec3 fyp = inkAt(q + vec2(0.0, e), wa, uWT), fym = inkAt(q - vec2(0.0, e), wa, uWT);
+  vec2 g = vec2(fxp.x - fxm.x, fyp.x - fym.x) / (2.0 * e);         // slope of the water surface (for the sheen)
+  // ink layers (u): the waves' own contours + even layers poured down the screen + the drops' ripples, all moved around together
+  vec2 gu = vec2((fxp.x - fxm.x) * uDens + (fxp.y - fxm.y) * uLayers + (fxp.z - fxm.z),
+                 (fyp.x - fym.x) * uDens + (fyp.y - fym.y) * uLayers + (fyp.z - fym.z)) / (2.0 * e);
 
   vec3 lk = lookAt(f0.y);
   float hue = lk.x;
 
-  // contour lines of the field, like the lines in marbled paper: u counts ink layers, aa is how wide one pixel is in layers
-  float u = f0.x * uDens + f0.y * uLayers;                         // the waves' own contours, plus even layers of ink poured down the screen — both dragged around together
-  float aa = clamp(length(g) * uDens * pix * 0.8, 0.05, 0.35);   // never sharp: ink spreads softly into the water
+  float u = f0.x * uDens + f0.y * uLayers + f0.z;
+  float aa = clamp(length(gu) * pix * 0.8, 0.05, 0.35);            // never sharp: ink spreads softly into the water
   float s0 = fract(u);
   float d0 = min(s0, 1.0 - s0);                                    // distance (in layers) to the nearest whole layer
 
@@ -879,29 +900,32 @@ void main() {
   float thick = 1.0 - clamp(d0 / max(duty, 0.02), 0.0, 1.0);                                    // 1 in the middle of a band, 0 at its edge
   vec3 col = mix(light, dark, darkW * (0.72 + 0.28 * thick));
 
-  // the drops themselves: a dark ring at the rim and clear water inside
-  vec2 pa = vec2(sqrt(q.x * q.x + 0.0001), q.y);
-  float px = pix * 1.1;
+  // the drops themselves, seen in the same moving water: a soft ring at the rim and clear, still water inside
+  vec2 pd = dragP(q, wa, uWT);
+  float px = pix * 1.8;
   float fillM = 0.0, ringM = 0.0;
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
-    dropAt(pa, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP1[k].w, uP0[k].x, d, R, Rb);
+    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP0[k].x, d, R, Rb);
     float r = length(d);
     float edge = r - R;
-    fillM = max(fillM, 1.0 - smoothstep(-px, px, edge));
+    float fk = 1.0 - smoothstep(-px, px, edge);
+    fillM = max(fillM, fk);
     ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
   }
-  vec3 ringC = hsv2rgb(vec3(hue, uTint * 1.4, max(lumD - 0.18, 0.0)));
+  vec3 ringC = hsv2rgb(vec3(hue, uTint * 1.4, max(lumD - 0.12, 0.0)));
   vec3 inner = hsv2rgb(vec3(hue, uTint * 0.4, min(lumL + 0.05, 1.0)));
-  col = mix(col, ringC, ringM);
+  ringM *= 1.0 - smoothstep(0.55, 0.95, fillM);                    // where two drops run together they become one pool: no rim inside it
+  col = mix(col, ringC, ringM * 0.8);
   col = mix(col, inner, fillM);
 
   // the water's surface: the waves tilt it, so it catches soft light and the odd glint, like the window reflected in a tray of water
   vec3 n = normalize(vec3(-g.x * 0.12, -g.y * 0.12, 1.0));
   float tilt = dot(n, normalize(vec3(0.0, 0.6, 0.8)));
-  col *= 1.0 + uSheen * 0.22 * (tilt - 0.8);
-  col += uSheen * 0.22 * pow(max(dot(n, normalize(vec3(0.0, 0.35, 0.94))), 0.0), 90.0);
+  float onWater = 1.0 - fillM;                                     // the drops themselves are flat, still water: no tilt shading inside them
+  col *= 1.0 + onWater * uSheen * 0.22 * (tilt - 0.8);
+  col += onWater * uSheen * 0.22 * pow(max(dot(n, normalize(vec3(0.0, 0.35, 0.94))), 0.0), 90.0);
   col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x) * 1.3, gl_FragCoord.y * 1.3 + 17.0)) - 0.5) * (0.04 + 0.1 * darkW) * uGrain;   // optional speckle (grain 0 = none)
 
   col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x), gl_FragCoord.y)) - 0.5) / 255.0;   // dither (mirrored, like everything else)
@@ -910,7 +934,7 @@ void main() {
 
 const WaterGL = {
   tried: false, ok: false, canvas: null, gl: null, prog: null, u: {}, w: 0, h: 0, error: '',
-  p0: new Float32Array(MAX_WAVES * 4), p1: new Float32Array(MAX_WAVES * 4), p2: new Float32Array(MAX_WAVES * 4), p3: new Float32Array(MAX_WAVES * 4),
+  p0: new Float32Array(MAX_WAVES * 4), p1: new Float32Array(MAX_WAVES * 4), p2: new Float32Array(MAX_WAVES * 4), p3: new Float32Array(MAX_WAVES * 4), p4: new Float32Array(MAX_WAVES * 4),
 
   init() {
     if (this.tried) return this.ok;
@@ -938,7 +962,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -961,9 +985,9 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
-    gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3);
+    gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     drawingContext.drawImage(this.canvas, 0, 0, width, height);   // same frame, so the GPU buffer is still valid
     return true;
@@ -985,7 +1009,7 @@ function drawCrowdWater(now) {
 
   // ---- each person's wave for this frame ----
   const W = WaterGL;
-  W.p0.fill(0); W.p1.fill(0); W.p2.fill(0); W.p3.fill(0);
+  W.p0.fill(0); W.p1.fill(0); W.p2.fill(0); W.p3.fill(0); W.p4.fill(0);
   list.forEach((p, i) => {
     const d = p.d, m = p.m, fw = formWeights(m);
     const life = lifeAlpha(p, now);
@@ -999,7 +1023,7 @@ function drawCrowdWater(now) {
     if (!p.dInit) {
       d.rank.snap(i + 1); d.motion.snap(targets.motion); d.count.snap(targets.count);
       d.wC.snap(fw[0]); d.wS.snap(fw[1]); d.wT.snap(fw[2]);
-      d.amp.snap(targets.amp); d.freq.snap(targets.freq); d.storm.snap(targets.storm);
+      d.amp.snap(targets.amp); d.freq.snap(targets.freq); d.storm.snap(targets.storm); d.drop.snap(0);
       p.dInit = true;
     } else {
       d.rank.update(i + 1, T.rank, dt);
@@ -1009,6 +1033,7 @@ function drawCrowdWater(now) {
       d.amp.ud(targets.amp, T.ampUp, T.ampDown, dt);
       d.freq.ud(targets.freq, T.freqUp, T.freqDown, dt);
       d.storm.ud(targets.storm, T.stormUp, T.stormDown, dt);
+      d.drop.ud(life, T.dropUp, T.dropDown, dt);
     }
     const st = d.storm.v;
     // Phase only ever moves forward. A storm makes the surge uneven (gusts) — the phase still never jumps.
@@ -1022,6 +1047,7 @@ function drawCrowdWater(now) {
     W.p0[o] = d.amp.v; W.p0[o + 1] = constrain(d.count.v * K.crestsPerPoint * (1 + K.stormCrestBoost * st), 1.5, 20); W.p0[o + 2] = st; W.p0[o + 3] = p.phase;
     W.p1[o] = d.wC.v / wsum; W.p1[o + 1] = d.wS.v / wsum; W.p1[o + 2] = d.wT.v / wsum; W.p1[o + 3] = life;
     W.p2[o] = hue; W.p2[o + 1] = d.rank.v; W.p2[o + 2] = p.chopPh[0]; W.p2[o + 3] = p.chopPh[1];
+    W.p4[o] = Math.min(life, Math.max(0, d.drop.v));                   // a drop grows slowly, and is exactly gone by the time its person is removed
     W.p3[o] = p.chopPh[2];
     const hs = n => { const x = Math.sin((n + 1) * 12.9898 + p.id * 78.233) * 43758.5453; return x - Math.floor(x); };   // this person's own, fixed random numbers: where their drop sits, how big, what shape
     W.p3[o + 1] = hs(1); W.p3[o + 2] = hs(2); W.p3[o + 3] = hs(3);
