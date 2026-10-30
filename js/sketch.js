@@ -1,7 +1,7 @@
 /* ============================================================================
-   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v10: ink marbling)
-   One image for the whole room: the screen is a sheet of marbled ink — bands of black, white
-   and blue ink that flow, fold and swirl into each other.
+   ENERGY BODIES — CROWD EDITION — DISPLAY SKETCH (v11: two-tone ink marbling)
+   One image for the whole room: the screen is a sheet of marbled paper — bands of a dark and a
+   light grainy ink that flow, fold and swirl into each other.
      - PoseNet runs in 'multiple' detection mode and a lightweight nearest-neighbor
        tracker gives each person a stable id across frames
      - Each person owns a HORIZONTAL BAND of the sheet, running the full width of the
@@ -48,25 +48,27 @@ const TUNE = {
   water: {
     // --- the water: a flowing texture filling the screen. Each person owns a horizontal band of it. ---
     resolution: 0.75,       // GPU render size relative to the screen (1 = full; lower is faster and a little softer)
-    speed: 1.0,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
-    contrast: 1.0,          // MASTER CONTRAST: 1 = as designed; lower = softer, inky lines fade toward the paper; higher = heavier black lines, brighter whites. Live: - and =
+    speed: .2,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
+    contrast: 1.0,          // MASTER CONTRAST: how far apart the dark and light inks are (0 = nearly flat grey, 1 = as designed, 1.6 = deep charcoal on near-white). Live: - and =
     bandOverlap: 0.9,       // how softly one person's band blends into the next (bigger = wider blend)
     steepness: 0.6,         // how steep a full-size wave is (slope: height / half-wavelength). Higher = rougher, brighter caustics
     hMax: 1.5,              // soft ceiling on wave height, so even a violent storm stays sane
     wavelengthSpan: 2.0,    // the height of the screen in the shader's units; crests are counted across this
     caustics: 0.05,         // how strongly waves focus light into bright webs (0 = none)
     glow: 1.0,              // brightness of the caustic webs
-    texture: 0.22,          // fine ripple texture that is always present, even in glassy-calm water (0 = perfectly smooth)
+    texture: 0.1,          // fine ripple texture that is always present, even in glassy-calm water (0 = perfectly smooth)
     // --- how a wave responds to its person: calm = smooth rolling swell, storm = steep, choppy, fast ---
     ampCalm: 0.85, ampSwell: 1.25, stormAmpBoost: 0.5,     // wave height: still / vigorous / extra in a storm
     freqCalm: 0.10, freqSwell: 0.30, stormFreqBoost: 0.35, // how often a crest passes (per second): still / vigorous / extra in a storm
     crestsPerPoint: 0.55,   // waves up the screen per tracked body point (a full body of 17 points = 5 across the screen, 11 points = 3)
     stormCrestBoost: 0.9,   // a storm packs in more, finer waves
-    inkDensity: 1.5,        // ink layers (contour lines) per wave height: more = finer, busier lines
-    inkLayers: 7,          // even layers of ink across the whole screen height (wavy lines even where the water is flat)
-    inkLine: 0.15,          // weight of the black lines (fraction of a layer)
-    dragCalm: 0.06,         // how far the ink is dragged around when calm: gentle S-curves...
-    dragStorm: 0.12,        // ...and in a full storm: folds and whirlpools
+    inkDensity: 1.1,        // ink layers (contour lines) per wave height: more = finer, busier lines
+    inkLayers: 26,         // even layers of ink across the whole screen height: more = finer, busier bands (even where the water is flat)
+    inkTint: 0.14,         // how much color shows through the grey inks (0 = pure grey; the tint shifts blue -> rose with movement)
+    grain: 1.0,            // paper grain / speckle on the ink (0 = none)
+    inkLine: 0.29,          // width of the dark ink bands as a fraction of a layer (0.25 = half dark, half light)
+    dragCalm: 0.09,         // how far the ink is dragged around when calm: gentle S-curves...
+    dragStorm: 0.22,        // ...and in a full storm: folds and whirlpools
     flowCalm: 0.12, flowStorm: 0.4,  // how fast the drag currents drift (radians per second) when calm / in a storm
     chop: 1.0,              // slope of the crossing chop waves that roughen the surface, at full storm
     crestSharpen: 0.2,      // how much a storm sharpens crests and widens troughs
@@ -709,7 +711,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uContrast;
+uniform float uContrast, uTint, uGrain;
 uniform float uLayers, uDens, uWarp0, uWarp1, uWT, uLine;   // ink: contour density, how much the ink is dragged (calm / storm), drag phase, line weight
 uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
@@ -829,24 +831,22 @@ void main() {
 
   // contour lines of the field, like the lines in marbled paper: u counts ink layers, aa is how wide one pixel is in layers
   float u = f0.x * uDens + f0.y * uLayers;                         // the waves' own contours, plus even layers of ink poured down the screen — both dragged around together
-  float aa = clamp(length(g) * uDens * pix * 0.8, 0.004, 0.35);
+  float aa = clamp(length(g) * uDens * pix * 0.8, 0.018, 0.35);   // never razor sharp: a soft, feathered edge, like ink on paper
   float s0 = fract(u);
   float d0 = min(s0, 1.0 - s0);                                    // distance (in layers) to the nearest whole layer
 
-  vec3 paper = hsv2rgb(vec3(hue, 0.26, 0.88));                      // pale blue paper; rose-lilac when moving
-  vec3 dye   = hsv2rgb(vec3(hue - 0.065, 0.78, 0.80));              // turquoise ink; magenta when moving
-  float ck = clamp(uContrast, 0.0, 1.0);                           // below 1 the black and white inks fade toward the dye and paper...
-  vec3 ink   = mix(dye * 0.55, vec3(0.025, 0.03, 0.055), ck);
-  vec3 white = mix(paper, vec3(0.96, 0.975, 1.0), ck);
-  float cb = 1.0 + 0.7 * max(uContrast - 1.0, 0.0);                // ...above 1 the black lines get heavier
-
-  float patch = smoothstep(-0.25 - aa, 0.25 + aa, sin(3.14159 * u + 1.0 + 1.5 * f0.y));      // broad patches of dye, every other layer or so
-  vec3 col = mix(paper, dye, patch * 0.9);
-  float wb = uLine * cb * (0.75 + 0.35 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // the black line varies in weight
-  float lineW = 1.0 - smoothstep(wb - aa, wb + aa, d0);
-  float whiteW = smoothstep(wb + 0.05 - aa, wb + 0.05 + aa, d0) - smoothstep(wb + 0.15 - aa, wb + 0.15 + aa, d0);
-  col = mix(col, white, whiteW * 0.95);
-  col = mix(col, ink, lineW);
+  // two inks only, like the marbled paper: a dark one and a light one in bands of roughly equal width, no outlines.
+  // uContrast sets how far apart the two tones are. uTint lets a little of the stillness->motion color show through the grey.
+  float lumD = clamp(0.62 - 0.26 * uContrast, 0.0, 1.0);
+  float lumL = clamp(0.66 + 0.20 * uContrast, 0.0, 1.0);
+  vec3 dark  = hsv2rgb(vec3(hue, uTint * 1.3, lumD));
+  vec3 light = hsv2rgb(vec3(hue, uTint * 0.55, lumL));
+  float duty = uLine * (0.8 + 0.3 * sin(TAU * 0.37 * u + 2.0 * f0.y));                          // dark band width, varying a little so it isn't mechanical
+  float darkW = 1.0 - smoothstep(duty - aa, duty + aa, d0);
+  vec3 col = mix(light, dark, darkW);
+  // paper grain: fine speckle that lies on the dark ink (static, like the paper itself; mirrored like everything else)
+  float grain = hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x) * 1.3, gl_FragCoord.y * 1.3 + 17.0)) - 0.5;
+  col += grain * (0.05 + 0.13 * darkW) * uGrain;
 
   col += (hash12(vec2(abs(gl_FragCoord.x - 0.5 * uRes.x), gl_FragCoord.y)) - 0.5) / 255.0;   // dither (mirrored, like everything else)
   gl_FragColor = vec4(col, 1.0);
@@ -882,7 +882,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uContrast', 'uTint', 'uGrain', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -905,7 +905,7 @@ const WaterGL = {
     gl.uniform1f(u.uN, f.N); gl.uniform1f(u.uSig, f.sig);
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
-    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uTint, K.inkTint); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
