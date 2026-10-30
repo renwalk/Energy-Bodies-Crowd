@@ -149,6 +149,12 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   is about half the size of a very active person's (it grows as they move and shrinks as they settle). It is capped relative to the screen, so a
   lone person doesn't get a drop the size of the whole picture, and each person gets a small random variation so no two are alike. The drop's
   pool takes the same colors (pale blue when calm, pink when moving, a stronger pink when moving so it stands out against the pink ink).
+- **Position in the frame:** each person's drop follows where they stand in the camera frame (`followBody`, 1 by default). Height in the frame sets the
+  drop's height on the screen (up = up). Because the picture is mirrored left-right, how far the person is from the *middle* of the frame sets how far
+  the drop (and its twin) is from the mirror line: stand in the middle and the pair meets in the middle of the screen like a butterfly's body; walk
+  toward either edge of the frame and the pair moves out toward the screen's edges. The position is eased over about a second so camera jitter doesn't
+  shake it (`smooth.pos`); `moveRangeX` / `moveRangeY` set how far across and up the screen a drop can go. `followBody` 0 puts every drop back at its own
+  fixed random place (values between blend the two).
 - **Distance from the camera:** a person's drop also scales with how far they are from the camera, read from how big their body looks in the frame (their
   apparent shoulder width): close = a larger drop, far = a smaller one, eased so it doesn't jump as they step. `distanceEffect` sets how much (0 = ignore
   distance, 1 = full, negative = reversed so far = bigger) and `distanceRef` is the apparent body size that gives the "normal" drop. The reading is

@@ -90,6 +90,9 @@ const TUNE = {
     dropCoreHue: 228, dropCoreHueMoving: 318, dropCoreSat: 0.80,   // color of the dense ink at the drop's heart as it first touches down: deep blue when calm, deep magenta when moving
     halo: 0.9,             // how strongly each drop colors the ink around it (0 = only the drop itself changes color, 1 = the ink right at its rim takes on its color fully)
     haloReach: 2.5,        // how far that color spreads, in drop-radii from the rim (the ripples take on the color and fade back to blue and white with distance)
+    followBody: 1,         // 1 = each drop follows where its person stands in the camera frame; 0 = drops sit at their own fixed, random places (in between blends)
+    moveRangeX: 0.9,       // how far toward the screen edge a drop goes when its person is at the edge of the frame
+    moveRangeY: 0.8,       // how far up/down the screen a drop goes when its person is at the top/bottom of the frame
     distanceEffect: 1,     // how much a person's distance from the camera sets the size of their drop: close = bigger, far = smaller (0 = ignore distance, 1 = full effect, negative = reversed: far = bigger)
     distanceRef: 0.1,      // how big a body looks (shoulder width as a fraction of the video's diagonal — about 3 m from a typical webcam) at the "normal" drop size
     dropRing: 0.014,       // weight of the dark ring around each drop
@@ -134,7 +137,7 @@ const TUNE = {
     // how long (seconds, roughly) each of these takes to glide to a new value — bigger = slower, calmer. "Up" is
     // growing/speeding up, "Down" is settling; a storm builds fast and dies slowly.
     smooth: { rank: 3.0, crowd: 3.0, motion: 1.8, form: 3.0, count: 3.0,
-              ampUp: 1.8, ampDown: 3.5, freqUp: 2.0, freqDown: 3.5, stormUp: 1.8, stormDown: 4.5, dropUp: 0.2, dropDown: 0.5, dist: 1.5 }
+              ampUp: 1.8, ampDown: 3.5, freqUp: 2.0, freqDown: 3.5, stormUp: 1.8, stormDown: 4.5, dropUp: 0.2, dropDown: 0.5, dist: 1.5, pos: 1.2 }
   }
 };
 
@@ -256,7 +259,7 @@ class Person {
     // Values actually drawn, each gliding toward its target: this person's patch of water, color, how many crests,
     // the mix of wave profiles (round / flat-topped / pointed), wave height, how often crests pass, and the storm.
     this.d = { rank: new Smooth(1), motion: new Smooth(0), count: new Smooth(1), wC: new Smooth(1), wS: new Smooth(0), wT: new Smooth(0),
-               amp: new Smooth(0), freq: new Smooth(0), storm: new Smooth(0), drop: new Smooth(0), dist: new Smooth(1) };
+               amp: new Smooth(0), freq: new Smooth(0), storm: new Smooth(0), drop: new Smooth(0), dist: new Smooth(1), bx: new Smooth(0.4), by: new Smooth(0) };
     // Wave phases only ever move forward (integrated), so changing speed can't make the water jump. The chop phases
     // start at fixed random offsets so every person's crossing waves differ.
     const r = mulberry32(id * 7919 + 13);
@@ -826,7 +829,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uHalo, uHaloReach;
+uniform float uHalo, uHaloReach, uFollow;
 uniform float uDropSat1, uCoreHue1;
 uniform float uDropHue, uDropHue1, uDropSat, uCoreHue, uCoreSat;
 uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uLSat1, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
@@ -835,6 +838,7 @@ uniform vec4 uP0[MAXW];   // amp, crests, storm, phase
 uniform vec4 uP1[MAXW];   // weight round, weight flat-topped, weight pointed, life
 uniform vec4 uP2[MAXW];   // hue (0-1), rank (1 = the bottom band), chop phase 0, chop phase 1
 uniform vec4 uP3[MAXW];   // chop phase 2, this person's three fixed random numbers
+uniform vec4 uP5[MAXW];   // where this person is in the camera frame: across (0 = middle of the frame, 1 = the edge) and up (-1 bottom .. 1 top), already smoothed
 uniform vec4 uP4[MAXW];   // how present this person's drop of ink is (0-1), how long ago it touched down (s), its scale from the person's distance from the camera
 const float TAU = 6.2831853;
 
@@ -921,7 +925,7 @@ float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.y
 // A sumi brush touching the water: the ink spreads out fast, overshoots a touch, and settles.
 float inkGrow(float age) { return (1.0 - exp(-age / 0.4)) * (1.0 + 0.10 * exp(-age * 0.9) * sin(age * 5.0)); }
 float dropCy(float rank) { return 2.0 * (rank - 0.5) / uN - 1.0; }
-void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float age, float amp, float dscale, out vec2 d, out float R, out float Rb) {
+void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float age, float amp, float dscale, float bx, float by, out vec2 d, out float R, out float Rb) {
   float asp = uRes.x / uRes.y;
   float bandH = 2.0 / uN;
   float sD = fract(sA * 7.31 + sB * 3.17);                         // two more fixed random numbers per person
@@ -929,6 +933,10 @@ void dropAt(vec2 pa, float rank, float sA, float sB, float sC, float life, float
   float base = uDrop * min(bandH, 1.0) * 0.5 * (0.8 + 0.4 * sC) * mix(0.5, 1.0, amp) * dscale * life * inkGrow(age);   // (amp here is the person's energy 0-1: a still person's drop is small, an active person's is big)
   float cx = max((0.10 + 0.72 * sD) * asp + 0.06 * sin(0.17 * uWT + sB * TAU), base * 1.6 + 0.12);    // anywhere across the half-screen, never reaching the mirror line
   float cy = dropCy(rank) + (sB - 0.5) * 1.1 * bandH + 0.06 * sin(0.13 * uWT + sA * TAU);       // and may wander toward the neighbouring bands
+  // ...or the drop follows the body: across the frame sets how far from the mirror line (the picture is mirrored, so standing in the middle of the
+  // frame puts the drop's twin pair together in the middle, and the edges of the frame put them at the edges of the screen); height in the frame sets height
+  cx = mix(cx, bx * asp + 0.03 * sin(0.17 * uWT + sB * TAU), uFollow);
+  cy = mix(cy, by + 0.03 * sin(0.13 * uWT + sA * TAU), uFollow);
   d = pa - vec2(cx, cy);
   Rb = base;
   float th = atan(d.y, d.x);
@@ -977,7 +985,7 @@ vec3 inkAt(vec2 q, float wa, float wt) {
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
-    dropAt(ps, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, clamp(uP2[k].x + 0.35 * uP0[k].z, 0.0, 1.0), uP4[k].z, d, R, Rb);
+    dropAt(ps, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, clamp(uP2[k].x + 0.35 * uP0[k].z, 0.0, 1.0), uP4[k].z, uP5[k].x, uP5[k].y, d, R, Rb);
     float r = max(length(d), 0.0001);
     p += (sqrt(max(r * r - R * R, 0.0)) / r - 1.0) * d;             // the push: the ink is sampled from where it was before the drop pushed it aside
     float s = max(r / max(R, 0.02) - 1.0, 0.0);                      // how many drop-radii out from the rim
@@ -1032,7 +1040,7 @@ void main() {
   for (int k = 0; k < MAXW; k++) {
     if (k >= uCount) break;
     vec2 d; float R, Rb;
-    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, clamp(uP2[k].x + 0.35 * uP0[k].z, 0.0, 1.0), uP4[k].z, d, R, Rb);
+    dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, clamp(uP2[k].x + 0.35 * uP0[k].z, 0.0, 1.0), uP4[k].z, uP5[k].x, uP5[k].y, d, R, Rb);
     float r = length(d);
     float edge = r - R;
     float fk = 1.0 - smoothstep(-px, px, edge);
@@ -1081,7 +1089,7 @@ void main() {
 const WaterGL = {
   quality: 1, qAcc: 0, qN: 0, qWarm: 0, qGood: 0, qUpFails: 0, qLastUp: false,
   tried: false, ok: false, canvas: null, gl: null, prog: null, u: {}, w: 0, h: 0, error: '',
-  p0: new Float32Array(MAX_WAVES * 4), p1: new Float32Array(MAX_WAVES * 4), p2: new Float32Array(MAX_WAVES * 4), p3: new Float32Array(MAX_WAVES * 4), p4: new Float32Array(MAX_WAVES * 4),
+  p0: new Float32Array(MAX_WAVES * 4), p1: new Float32Array(MAX_WAVES * 4), p2: new Float32Array(MAX_WAVES * 4), p3: new Float32Array(MAX_WAVES * 4), p4: new Float32Array(MAX_WAVES * 4), p5: new Float32Array(MAX_WAVES * 4),
 
   init() {
     if (this.tried) return this.ok;
@@ -1109,7 +1117,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uHalo', 'uHaloReach', 'uDropSat1', 'uCoreHue1', 'uDropHue', 'uDropHue1', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uHalo', 'uHaloReach', 'uDropSat1', 'uCoreHue1', 'uDropHue', 'uDropHue1', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4', 'uP5', 'uFollow']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -1157,7 +1165,7 @@ const WaterGL = {
     gl.uniform1f(u.uHalo, K.halo); gl.uniform1f(u.uHaloReach, K.haloReach); gl.uniform1f(u.uDropHue, K.dropHue); gl.uniform1f(u.uDropHue1, K.dropHueMoving); gl.uniform1f(u.uDropSat, K.dropSat); gl.uniform1f(u.uDropSat1, K.dropSatMoving); gl.uniform1f(u.uCoreHue1, K.dropCoreHueMoving); gl.uniform1f(u.uCoreHue, K.dropCoreHue); gl.uniform1f(u.uCoreSat, K.dropCoreSat);
     gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uLSat1, K.lightSatMoving); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
-    gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4);
+    gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4); gl.uniform4fv(u.uP5, this.p5); gl.uniform1f(u.uFollow, K.followBody);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     drawingContext.drawImage(this.canvas, 0, 0, width, height);   // same frame, so the GPU buffer is still valid
     return true;
@@ -1173,6 +1181,15 @@ function distScale(person) {
   if (!person.bodyScale || !K.distanceEffect) return 1;
   const ratio = constrain(person.bodyScale / (K.distanceRef * diag), 0.2, 5);
   return constrain(Math.pow(ratio, 0.6 * K.distanceEffect), 0.45, 1.9);
+}
+
+// Where a person stands in the camera frame, as a place for their drop: x = how far from the middle of the frame (0 centre .. 1 edge — the picture is
+// mirrored left-right, so this is the distance from the mirror line), y = height in the frame (-1 bottom .. 1 top). Uses where PoseNet last saw them.
+function bodyPlace(person) {
+  const K = TUNE.water, vw = video?.width || 960, vh = video?.height || 540;
+  const x = Math.min(1, Math.abs(person.cx / vw - 0.5) * 2) * K.moveRangeX;
+  const y = constrain((0.5 - person.cy / vh) * 2, -1, 1) * K.moveRangeY;
+  return { x, y };
 }
 
 function drawCrowdWater(now) {
@@ -1193,7 +1210,7 @@ function drawCrowdWater(now) {
 
   // ---- each person's wave for this frame ----
   const W = WaterGL;
-  W.p0.fill(0); W.p1.fill(0); W.p2.fill(0); W.p3.fill(0); W.p4.fill(0);
+  W.p0.fill(0); W.p1.fill(0); W.p2.fill(0); W.p3.fill(0); W.p4.fill(0); W.p5.fill(0);
   list.forEach((p, i) => {
     const d = p.d, m = p.m, fw = formWeights(m);
     const life = lifeAlpha(p, now);
@@ -1208,7 +1225,7 @@ function drawCrowdWater(now) {
     if (!p.dInit) {
       d.rank.snap(i + 1); d.motion.snap(targets.motion); d.count.snap(targets.count);
       d.wC.snap(fw[0]); d.wS.snap(fw[1]); d.wT.snap(fw[2]);
-      d.amp.snap(targets.amp); d.freq.snap(targets.freq); d.storm.snap(targets.storm); d.drop.snap(1); p.inkAge = 0; d.dist.snap(distScale(p));
+      d.amp.snap(targets.amp); d.freq.snap(targets.freq); d.storm.snap(targets.storm); d.drop.snap(1); p.inkAge = 0; d.dist.snap(distScale(p)); { const bp = bodyPlace(p); d.bx.snap(bp.x); d.by.snap(bp.y); }
       p.dInit = true;
     } else {
       d.rank.update(i + 1, T.rank, dt);
@@ -1220,6 +1237,7 @@ function drawCrowdWater(now) {
       d.storm.ud(targets.storm, T.stormUp, T.stormDown, dt);
       d.drop.ud(outA, T.dropUp, T.dropDown, dt);
       d.dist.update(distScale(p), T.dist, dt);
+      { const bp = bodyPlace(p); d.bx.update(bp.x, T.pos, dt); d.by.update(bp.y, T.pos, dt); }
     }
     const st = d.storm.v;
     p.inkAge += dt * Math.sqrt(K.speed);                                // seconds since this person's ink touched the water (runs with the speed dial, gently)
@@ -1234,7 +1252,7 @@ function drawCrowdWater(now) {
     W.p0[o] = d.amp.v; W.p0[o + 1] = constrain(d.count.v * K.crestsPerPoint * (1 + K.stormCrestBoost * st), 1.5, 20); W.p0[o + 2] = st; W.p0[o + 3] = p.phase;
     W.p1[o] = d.wC.v / wsum; W.p1[o + 1] = d.wS.v / wsum; W.p1[o + 2] = d.wT.v / wsum; W.p1[o + 3] = life;
     W.p2[o] = hue; W.p2[o + 1] = d.rank.v; W.p2[o + 2] = p.chopPh[0]; W.p2[o + 3] = p.chopPh[1];
-    W.p4[o + 2] = d.dist.v;
+    W.p4[o + 2] = d.dist.v; W.p5[o] = d.bx.v; W.p5[o + 1] = d.by.v;
     W.p4[o] = Math.min(outA, Math.max(0, d.drop.v)); W.p4[o + 1] = p.inkAge;   // how present the drop is (exactly 0 as its person is removed) and how long ago it touched down
     W.p3[o] = p.chopPh[2];
     const hs = n => { const x = Math.sin((n + 1) * 12.9898 + p.id * 78.233) * 43758.5453; return x - Math.floor(x); };   // this person's own, fixed random numbers: where their drop sits, how big, what shape
