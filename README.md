@@ -149,6 +149,10 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   is about half the size of a very active person's (it grows as they move and shrinks as they settle). It is capped relative to the screen, so a
   lone person doesn't get a drop the size of the whole picture, and each person gets a small random variation so no two are alike. The drop's
   pool takes the same colors (pale blue when calm, pink when moving, a stronger pink when moving so it stands out against the pink ink).
+- **Distance from the camera:** a person's drop also scales with how far they are from the camera, read from how big their body looks in the frame (their
+  apparent shoulder width): close = a larger drop, far = a smaller one, eased so it doesn't jump as they step. `distanceEffect` sets how much (0 = ignore
+  distance, 1 = full, negative = reversed so far = bigger) and `distanceRef` is the apparent body size that gives the "normal" drop. The reading is
+  held while a person's shoulders aren't visible. `d` shows each person's `distance scale`.
 - **How movement is read:** each body point's speed is judged relative to that person's own body size (so someone far from the camera still
   registers), then averaged over the body. `velNormMax` (how fast a point must move to count as fully active) and `motionFullMean` (how much of
   the body must be active to read as fully in motion) set the sensitivity: lower either to make the water respond to smaller movements.
