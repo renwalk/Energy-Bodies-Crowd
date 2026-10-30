@@ -149,6 +149,9 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   is about half the size of a very active person's (it grows as they move and shrinks as they settle). It is capped relative to the screen, so a
   lone person doesn't get a drop the size of the whole picture, and each person gets a small random variation so no two are alike. The drop's
   pool takes the same colors (pale blue when calm, pink when moving, a stronger pink when moving so it stands out against the pink ink).
+- **When nobody is tracked** the screen isn't black: it settles to an idle sheet — nearly straight, softly contrasted blue-and-white ink lines with only a
+  very slow breath. It eases in as the last person fades out and eases back into the full picture (with the sumi-brush touch) when someone arrives.
+  `TUNE.water.idleFlatten` sets how flat and still it goes (0 turns the idle look off). The display also draws this before tracking has started.
 - **Position in the frame:** each person's drop follows where they stand in the camera frame (`followBody`, 1 by default). Height in the frame sets the
   drop's height on the screen (up = up). Because the picture is mirrored left-right, how far the person is from the *middle* of the frame sets how far
   the drop (and its twin) is from the mirror line: stand in the middle and the pair meets in the middle of the screen like a butterfly's body; walk

@@ -90,6 +90,7 @@ const TUNE = {
     dropCoreHue: 228, dropCoreHueMoving: 318, dropCoreSat: 0.80,   // color of the dense ink at the drop's heart as it first touches down: deep blue when calm, deep magenta when moving
     halo: 0.9,             // how strongly each drop colors the ink around it (0 = only the drop itself changes color, 1 = the ink right at its rim takes on its color fully)
     haloReach: 2.5,        // how far that color spreads, in drop-radii from the rim (the ripples take on the color and fade back to blue and white with distance)
+    idleFlatten: 1,        // how flat and still the picture goes when nobody is tracked (1 = nearly straight, almost motionless blue-and-white lines; 0 = no special idle look)
     followBody: 1,         // 1 = each drop follows where its person stands in the camera frame; 0 = drops sit at their own fixed, random places (in between blends)
     moveRangeX: 0.9,       // how far toward the screen edge a drop goes when its person is at the edge of the frame
     moveRangeY: 0.8,       // how far up/down the screen a drop goes when its person is at the top/bottom of the frame
@@ -708,7 +709,7 @@ function setup() {
 
 function draw() {
   background(0);
-  if (trackingStarted) drawCrowdWater(millis());
+  drawCrowdWater(millis());   // (with nobody tracked this draws the calm, almost-still idle sheet)
 
   fill(255);
   noStroke();
@@ -829,7 +830,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uCount;
 uniform float uN, uSig, uSpan, uSteep, uHMax, uCurve, uCross, uChop, uSharpen, uCaus, uGlow, uTexture;
-uniform float uHalo, uHaloReach, uFollow;
+uniform float uHalo, uHaloReach, uFollow, uIdle, uTime;   // idle: 1 when nobody is tracked (flat, almost still), 0 when someone is here
 uniform float uDropSat1, uCoreHue1;
 uniform float uDropHue, uDropHue1, uDropSat, uCoreHue, uCoreSat;
 uniform float uContrast, uDH0, uDH1, uLH0, uLH1, uDSat, uLSat, uLSat1, uGrain, uSheen, uDrop, uDropRing, uRipple, uRippleLen;   // drops: size (fraction of a band's height, 0 = none), ring weight
@@ -907,6 +908,7 @@ vec3 lookAt(float tau) {
                                                                   // the part of the screen only they covered takes on the others' look smoothly instead of jumping
     hue += w * uP2[k].x; st += w * uP0[k].z; am += w * uP0[k].x * uSteep * (uSpan / uP0[k].y) / TAU; den += w;
   }
+  den += uIdle;                                                   // the idle sheet counts as a calm, blue "person" of its own while nobody is here, so the look eases to calm blue as the last person fades
   return vec3(hue, st, am) / max(den, 0.000001);
 }
 
@@ -1000,7 +1002,7 @@ vec3 inkAt(vec2 q, float wa, float wt) {
   }
   float tau = clamp((p.y + 1.0) * 0.5, 0.0, 1.0);
   float h = heightAt(p);
-  return vec3(h / (lookAt(tau).z + 0.02), tau, ripple * uRipple);
+  return vec3(h / (lookAt(tau).z + 0.02) * (1.0 - uIdle), tau, ripple * uRipple);   // (the wave pattern is normalised by wave size, so it is also scaled by how present people are: it eases to flat as the last person fades, instead of staying full-strength until they vanish)
 }
 
 void main() {
@@ -1009,7 +1011,7 @@ void main() {
   float pix = 2.0 / uRes.y;                                        // one pixel, in the same units
 
   vec3 lk0 = lookAt(clamp((q.y + 1.0) * 0.5, 0.0, 1.0));
-  float wa = uWarp0 + uWarp1 * lk0.y;                              // a storm drags the ink much further
+  float wa = (uWarp0 + uWarp1 * lk0.y) * (1.0 - 0.85 * uIdle);     // a storm drags the ink much further; the idle sheet hardly at all
   vec3 f0 = inkAt(q, wa, uWT);
   vec3 fxp = inkAt(q + vec2(e, 0.0), wa, uWT), fxm = inkAt(q - vec2(e, 0.0), wa, uWT);
   vec3 fyp = inkAt(q + vec2(0.0, e), wa, uWT), fym = inkAt(q - vec2(0.0, e), wa, uWT);
@@ -1023,15 +1025,16 @@ void main() {
   float hueD = mix(uDH0, uDH1, mot) / 360.0;
   float hueL = mix(uLH0, uLH1, mot) / 360.0;
 
-  float u = f0.x * uDens + f0.y * uLayers + f0.z;
+  float u = f0.x * uDens + f0.y * uLayers + f0.z + uIdle * 0.3 * sin(uTime * 0.25 + f0.y * 2.6);   // (the idle sheet breathes very slowly)
   float aa = clamp(length(gu) * pix * 0.8, 0.05, 0.35);            // never sharp: ink spreads softly into the water
   float s0 = fract(u);
   float d0 = min(s0, 1.0 - s0);                                    // distance (in layers) to the nearest whole layer
 
   // ink floating on water: a translucent dark ink over a pale light one, thickest in the middle of each band and thinning
   // softly to its edges. uContrast sets how far apart the two tones are; each ink has its own color.
-  float lumD = clamp(0.62 - 0.26 * uContrast, 0.0, 1.0);
-  float lumL = clamp(0.80 + 0.20 * uContrast, 0.0, 1.0);
+  float ctr = uContrast * (1.0 - 0.3 * uIdle);                      // (a little softer when idle)
+  float lumD = clamp(0.62 - 0.26 * ctr, 0.0, 1.0);
+  float lumL = clamp(0.80 + 0.20 * ctr, 0.0, 1.0);
 
   // where the drops are, seen in the same moving water; and how strongly each one colors the water around it
   vec2 pd = dropSpace(q, dragP(q, wa, uWT), wa);
@@ -1043,10 +1046,11 @@ void main() {
     dropAt(pd, uP2[k].y, uP3[k].y, uP3[k].z, uP3[k].w, uP4[k].x, uP4[k].y, clamp(uP2[k].x + 0.35 * uP0[k].z, 0.0, 1.0), uP4[k].z, uP5[k].x, uP5[k].y, d, R, Rb);
     float r = length(d);
     float edge = r - R;
-    float fk = 1.0 - smoothstep(-px, px, edge);
+    float real = smoothstep(0.0, 0.02, R);                         // a drop that has shrunk to nothing leaves no trace (not even a dot)
+    float fk = (1.0 - smoothstep(-px, px, edge)) * real;
     fillM = max(fillM, fk);
     coreM = max(coreM, fk * max(exp(-uP4[k].y / 2.6), 0.14) * (1.0 - 0.55 * clamp(r / max(R, 0.02), 0.0, 1.0)));   // (a faint blue wash stays at the heart)   // the brush's dense ink, bleeding thinner from the rim inward
-    ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)));
+    ringM = max(ringM, smoothstep(-px, px, edge) * (1.0 - smoothstep(uDropRing - px, uDropRing + px, edge)) * real);
     float s = max(r / max(R, 0.02) - 1.0, 0.0);                    // drop-radii out from the rim
     float hk = exp(-s / uHaloReach) * uP4[k].x * smoothstep(0.0, 1.2, uP4[k].y);   // (the color spreads out with the drop as it touches down)
     if (hk > halo) { halo = hk; haloS = s; }
@@ -1117,7 +1121,7 @@ const WaterGL = {
       const loc = gl.getAttribLocation(prog, 'aPos');
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uHalo', 'uHaloReach', 'uDropSat1', 'uCoreHue1', 'uDropHue', 'uDropHue1', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4', 'uP5', 'uFollow']) {
+      for (const n of ['uRes', 'uCount', 'uN', 'uSig', 'uSpan', 'uSteep', 'uHMax', 'uCurve', 'uCross', 'uChop', 'uSharpen', 'uCaus', 'uGlow', 'uTexture', 'uHalo', 'uHaloReach', 'uDropSat1', 'uCoreHue1', 'uDropHue', 'uDropHue1', 'uDropSat', 'uCoreHue', 'uCoreSat', 'uContrast', 'uDH0', 'uDH1', 'uLH0', 'uLH1', 'uDSat', 'uLSat', 'uLSat1', 'uGrain', 'uSheen', 'uDrop', 'uDropRing', 'uRipple', 'uRippleLen', 'uLayers', 'uDens', 'uWarp0', 'uWarp1', 'uWT', 'uLine', 'uIdle', 'uTime', 'uP0', 'uP1', 'uP2', 'uP3', 'uP4', 'uP5', 'uFollow']) {
         this.u[n] = gl.getUniformLocation(prog, n);
       }
       this.gl = gl; this.prog = prog; this.ok = true;
@@ -1163,7 +1167,7 @@ const WaterGL = {
     gl.uniform1f(u.uSpan, K.wavelengthSpan); gl.uniform1f(u.uSteep, K.steepness); gl.uniform1f(u.uHMax, K.hMax);
     gl.uniform1f(u.uCurve, K.curve); gl.uniform1f(u.uCross, K.crossSwell); gl.uniform1f(u.uChop, K.chop); gl.uniform1f(u.uSharpen, K.crestSharpen);
     gl.uniform1f(u.uHalo, K.halo); gl.uniform1f(u.uHaloReach, K.haloReach); gl.uniform1f(u.uDropHue, K.dropHue); gl.uniform1f(u.uDropHue1, K.dropHueMoving); gl.uniform1f(u.uDropSat, K.dropSat); gl.uniform1f(u.uDropSat1, K.dropSatMoving); gl.uniform1f(u.uCoreHue1, K.dropCoreHueMoving); gl.uniform1f(u.uCoreHue, K.dropCoreHue); gl.uniform1f(u.uCoreSat, K.dropCoreSat);
-    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uLSat1, K.lightSatMoving); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uLine, K.inkLine);
+    gl.uniform1f(u.uContrast, K.contrast); gl.uniform1f(u.uDH0, K.darkHueStill); gl.uniform1f(u.uDH1, K.darkHueMoving); gl.uniform1f(u.uLH0, K.lightHueStill); gl.uniform1f(u.uLH1, K.lightHueMoving); gl.uniform1f(u.uDSat, K.darkSat); gl.uniform1f(u.uLSat, K.lightSat); gl.uniform1f(u.uLSat1, K.lightSatMoving); gl.uniform1f(u.uGrain, K.grain); gl.uniform1f(u.uSheen, K.sheen); gl.uniform1f(u.uDrop, K.dropSize); gl.uniform1f(u.uDropRing, K.dropRing); gl.uniform1f(u.uRipple, K.ripples); gl.uniform1f(u.uRippleLen, K.rippleReach); gl.uniform1f(u.uLayers, K.inkLayers); gl.uniform1f(u.uDens, K.inkDensity); gl.uniform1f(u.uWarp0, K.dragCalm); gl.uniform1f(u.uWarp1, K.dragStorm); gl.uniform1f(u.uWT, f.wt); gl.uniform1f(u.uIdle, f.idle * K.idleFlatten); gl.uniform1f(u.uTime, f.time); gl.uniform1f(u.uLine, K.inkLine);
     gl.uniform1f(u.uCaus, K.caustics); gl.uniform1f(u.uGlow, K.glow); gl.uniform1f(u.uTexture, K.texture);
     gl.uniform4fv(u.uP0, this.p0); gl.uniform4fv(u.uP1, this.p1); gl.uniform4fv(u.uP2, this.p2); gl.uniform4fv(u.uP3, this.p3); gl.uniform4fv(u.uP4, this.p4); gl.uniform4fv(u.uP5, this.p5); gl.uniform1f(u.uFollow, K.followBody);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1197,7 +1201,7 @@ function drawCrowdWater(now) {
   // First person = the band nearest the viewer. A new person only gets a wave once their tracking has settled (a few
   // pose events) — before that their measurements are just placeholders.
   const list = Array.from(people.values()).filter(p => p.poseEvents >= 5).sort((a, b) => a.id - b.id).slice(0, MAX_WAVES);
-  if (!list.length) return;
+  // (With nobody tracked the list is empty and the shader draws the idle sheet: calm, flat, almost still, in the calm blue-and-white.)
   // Frame time, smoothed: when PoseNet briefly hogs the GPU and a frame arrives late, the water carries on at an even pace instead of lurching
   // to catch up (a late frame is spread over the next several).
   const dtRaw = Math.min(0.1, (typeof deltaTime === 'number' ? deltaTime : 16.7) / 1000);
@@ -1211,9 +1215,11 @@ function drawCrowdWater(now) {
   // ---- each person's wave for this frame ----
   const W = WaterGL;
   W.p0.fill(0); W.p1.fill(0); W.p2.fill(0); W.p3.fill(0); W.p4.fill(0); W.p5.fill(0);
+  let maxLife = 0;
   list.forEach((p, i) => {
     const d = p.d, m = p.m, fw = formWeights(m);
     const life = lifeAlpha(p, now);
+    maxLife = Math.max(maxLife, life);
     const missed = now - p.lastSeen, outA = missed > 250 ? clamp01(1 - (missed - 250) / (TUNE.tracking.personTimeoutMs - 250)) : 1;   // fade-out part of life only
     const mo = d.motion.v;
     const targets = {
@@ -1260,11 +1266,12 @@ function drawCrowdWater(now) {
   });
 
   // The ink's drag currents drift forward at a pace set by the crowd's average storm — phase only ever advances, so a change of pace never jumps
-  const stAvg = list.reduce((a, p) => a + p.d.storm.v, 0) / list.length;
+  const stAvg = list.length ? list.reduce((a, p) => a + p.d.storm.v, 0) / list.length : 0;
   inkDragPhase += lerp(K.flowCalm, K.flowStorm, stAvg) * dt * K.speed;
 
   W.adapt(typeof deltaTime === 'number' ? deltaTime : 16.7);
-  const ok = W.render({ count: list.length, N, sig: K.bandOverlap * 0.5 / N, wt: inkDragPhase });
+  const idle = 1 - maxLife;   // 1 = nobody here (idle sheet), 0 = someone fully present; eases as people fade in and out
+  const ok = W.render({ count: list.length, N, sig: K.bandOverlap * 0.5 / N, wt: inkDragPhase, idle, time: timeS });
   if (!ok) { // no WebGL: say so on screen rather than showing nothing
     drawingContext.save(); drawingContext.fillStyle = '#fff'; drawingContext.font = '16px sans-serif';
     drawingContext.fillText('The water needs WebGL: ' + W.error, 12, 90); drawingContext.restore();
