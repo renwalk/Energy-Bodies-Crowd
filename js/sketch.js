@@ -59,8 +59,9 @@ const TUNE = {
   },
   water: {
     // --- the water: a flowing texture filling the screen. Each person owns a horizontal band of it. ---
-    resolution: 0.75,       // GPU render size relative to the screen (1 = full; lower is faster and a little softer)
-    maxPixels: 800000,      // never render more than this many pixels, however big the screen (the cost grows with pixels; a big display at 0.75 can be several million)
+    resolution: 1.0,        // GPU render size relative to the screen (1 = one rendered pixel per screen pixel; lower is faster and a little softer)
+    fastSlopes: true,       // use the GPU's own derivatives for edge slopes (about 4x cheaper, so far more pixels per second); set false if a graphics card draws it wrongly
+    maxPixels: 3000000,     // never render more than this many pixels, however big the screen — the cost grows with pixels. On a big display raise it (press ] while it runs) as far as the computer keeps 60 fps; the picture is simply stretched to fit beyond it
     autoQuality: true,      // if the display can't keep up (under ~45 fps for a few seconds) it lowers its own render size until it can, so the motion stays fluid; if it then holds 60 fps for a good while it cautiously tries sharper again (at most twice)
     speed: .02,             // MASTER SPEED: scales how fast everything moves (waves, ripples, ink drift). 0.5 = half speed. Live: , and .
     contrast: 0.55,         // MASTER CONTRAST: how far apart the dark and light inks are (0 = nearly the same, 0.55 = soft, translucent ink on water, 1.6 = deep charcoal on near-white). Live: - and =
@@ -718,9 +719,11 @@ function draw() {
   if (window.__ebSession?.active) text(`Recording: ${window.__ebSession.samples} samples`, 12, 40);
   text(`[${displayOrientation}]`, 12, 60);
   if (debugOn) drawDebug();
-  if (millis() < dialShownUntil) {   // brief readout after adjusting speed / contrast
-    const K = TUNE.water;
-    text(`speed ${K.speed.toFixed(1)}   contrast ${K.contrast.toFixed(1)}      ( , .  speed    - =  contrast )`, 12, height - 16);
+  if (millis() < dialShownUntil) {   // brief readout after adjusting speed / contrast / render size (scaled up on big screens so it can be read from a distance)
+    const K = TUNE.water, k = Math.max(1, height / 700);
+    push(); translate(0, height); scale(k); fill(0, 150); noStroke(); rect(6, -52, Math.min(width / k - 12, 900), 46); fill(255); textSize(14);
+    text(`speed ${K.speed.toFixed(2)}   contrast ${K.contrast.toFixed(1)}      ( , .  speed    - =  contrast )`, 12, -36);
+    text(`drawing ${WaterGL.w}x${WaterGL.h} (${(WaterGL.w * WaterGL.h / 1e6).toFixed(1)} MP) onto a ${width}x${height} screen   ${Math.round(frameRate())} fps   auto quality ${K.autoQuality ? 'on' : 'off'}      ( ] sharper    [ softer    a auto quality )`, 12, -16); pop();
   }
 }
 
@@ -735,13 +738,13 @@ function drawDebug() {
   const worst = Math.max(...dbgFrames.map(f => f[1]));
   if (worst > dbgWorst || now - dbgWorstAt > 5000) { dbgWorst = worst; dbgWorstAt = now; }
   const lines = [
-    `fps ${Math.round(frameRate())}   worst frame (1s) ${Math.round(worst)} ms   worst (5s) ${Math.round(dbgWorst)} ms   render ${WaterGL.w}x${WaterGL.h} (quality ${WaterGL.quality.toFixed(2)})`,
+    `fps ${Math.round(frameRate())}   worst frame (1s) ${Math.round(worst)} ms   worst (5s) ${Math.round(dbgWorst)} ms   render ${WaterGL.w}x${WaterGL.h} (quality ${WaterGL.quality.toFixed(2)}${WaterGL.derivatives ? ', fast slopes' : ', slow slopes'})`,
     `people ${people.size}   ids created ${nextPersonId - 1}   skeletons this frame ${latestPoses.length}   phantoms turned away ${trackStats.rejected}   waiting to be confirmed ${candidates.length}`
   ];
   for (const p of Array.from(people.values()).sort((a, b) => a.id - b.id)) {
     lines.push(`#${p.id}  points ${p.m.bodyPoints}  motion ${p.m.motion.toFixed(2)}  storm ${p.m.storm.toFixed(2)}  amp ${p.d.amp.v.toFixed(2)}  waves ${p.d.count.v.toFixed(1)}  age ${(p.inkAge || 0).toFixed(1)}s  distance scale ${p.d.dist.v.toFixed(2)}`);
   }
-  push(); noStroke(); fill(0, 150); rect(8, 76, 640, 18 * lines.length + 10); fill(255); textSize(12);
+  push(); scale(Math.max(1, height / 700)); noStroke(); fill(0, 150); rect(8, 76, 640, 18 * lines.length + 10); fill(255); textSize(12);
   lines.forEach((l, i) => text(l, 14, 94 + 18 * i));
   pop();
 }
@@ -751,6 +754,15 @@ let dialShownUntil = 0;
 function keyPressed() {
   const K = TUNE.water;
   if (key === 'd' || key === 'D') { debugOn = !debugOn; return; }
+  // Render size, live (for finding the sharpest picture a given screen and computer can keep fluid): ] draws more pixels, [ fewer, a toggles auto quality.
+  // Pressing ] or [ takes over from auto quality (so it doesn't fight you); press a to hand control back to it.
+  if (key === ']' || key === '}' || key === '[' || key === '{') {
+    K.resolution = 1; K.autoQuality = false;
+    K.maxPixels = (key === ']' || key === '}') ? Math.min(K.maxPixels * 1.25, 25e6) : Math.max(K.maxPixels * 0.8, 150e3);
+    Object.assign(WaterGL, { quality: 1, qAcc: 0, qN: 0, qWarm: 45, qGood: 0, qUpFails: 0, qLastUp: false });
+    dialShownUntil = millis() + 6000; return;
+  }
+  if (key === 'a' || key === 'A') { K.autoQuality = !K.autoQuality; dialShownUntil = millis() + 6000; return; }
   const step = (v, d, lo, hi) => Math.round(constrain(v + d, lo, hi) * 10) / 10;
   if (key === ',' || key === '<') K.speed = step(K.speed, -0.1, 0.1, 3);
   else if (key === '.' || key === '>') K.speed = step(K.speed, 0.1, 0.1, 3);
@@ -1013,12 +1025,21 @@ void main() {
   vec3 lk0 = lookAt(clamp((q.y + 1.0) * 0.5, 0.0, 1.0));
   float wa = (uWarp0 + uWarp1 * lk0.y) * (1.0 - 0.85 * uIdle);     // a storm drags the ink much further; the idle sheet hardly at all
   vec3 f0 = inkAt(q, wa, uWT);
+#ifdef USE_DERIV
+  // The slopes come straight from the GPU's own screen-space derivatives: the ink field is worked out ONCE per pixel instead of five times, so the
+  // same computer can draw several times more pixels per second (a much sharper picture on a big screen). (Pixel pairs are mirrored exactly,
+  // because the render size is always even, so the picture stays an exact mirror.)
+  vec2 g = vec2(dFdx(f0.x), dFdy(f0.x)) / pix;                      // slope of the water surface (for the sheen)
+  float uu = f0.x * uDens + f0.y * uLayers + f0.z;
+  vec2 gu = vec2(dFdx(uu), dFdy(uu)) / pix;
+#else
   vec3 fxp = inkAt(q + vec2(e, 0.0), wa, uWT), fxm = inkAt(q - vec2(e, 0.0), wa, uWT);
   vec3 fyp = inkAt(q + vec2(0.0, e), wa, uWT), fym = inkAt(q - vec2(0.0, e), wa, uWT);
   vec2 g = vec2(fxp.x - fxm.x, fyp.x - fym.x) / (2.0 * e);         // slope of the water surface (for the sheen)
   // ink layers (u): the waves' own contours + even layers poured down the screen + the drops' ripples, all moved around together
   vec2 gu = vec2((fxp.x - fxm.x) * uDens + (fxp.y - fxm.y) * uLayers + (fxp.z - fxm.z),
                  (fyp.x - fym.x) * uDens + (fyp.y - fym.y) * uLayers + (fyp.z - fym.z)) / (2.0 * e);
+#endif
 
   vec3 lk = lookAt(f0.y);
   float mot = lk.x;                                                // how much movement there is here (0 = still, 1 = moving): slides both inks along their blue -> pink ranges
@@ -1110,7 +1131,10 @@ const WaterGL = {
       };
       const prog = gl.createProgram();
       gl.attachShader(prog, compile(gl.VERTEX_SHADER, WATER_VERT));
-      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, WATER_FRAG));
+      // Slopes from screen-space derivatives (one ink-field evaluation per pixel instead of five) where the GPU supports it; otherwise the slower, equivalent way.
+      const deriv = gl.getExtension('OES_standard_derivatives');
+      this.derivatives = !!deriv && TUNE.water.fastSlopes;
+      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, (this.derivatives ? '#extension GL_OES_standard_derivatives : enable\n#define USE_DERIV\n' : '') + WATER_FRAG));
       gl.linkProgram(prog);
       if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
       gl.useProgram(prog);

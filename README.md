@@ -124,6 +124,12 @@ Everything performance/visual-related lives in the `TUNE` object at the top of `
   how far apart the dark and light inks are (default 0.55 = soft, translucent; up to 1.6 = deep charcoal on near-white). **Both can be changed live on the display machine:** press `,` / `.` for slower /
   faster and `-` / `=` for softer / bolder contrast — a small readout appears for a couple of seconds. Live changes
   last until reload, so copy the value you like into `TUNE.water`.
+- **Resolution on a very large screen** (`TUNE.water.resolution`, `maxPixels`, `fastSlopes`, `autoQuality`). The picture is drawn by the GPU at `resolution` x the screen size,
+  never more than `maxPixels` pixels, and stretched to fit — so on a huge display the number that matters is `maxPixels`. `fastSlopes` (on by default) takes the ink's edge
+  slopes from the GPU's own derivatives, which is about 3x cheaper than before and lets the same computer draw far more pixels at 60 fps (on the development Mac: about 6.5
+  megapixels at 59 fps without tracking; native 4K is 8.3). **Live keys on the display:** `]` draws more pixels, `[` fewer, `a` toggles auto quality; a readout shows what it is
+  drawing (`WxH`, megapixels), onto what screen size, and the frame rate. Raise it until the frame rate (press `d`) starts to drop below 60, then back off one step. The ink is
+  soft by design, so a modest stretch is not noticeable. `fastSlopes: false` returns to the slower path if a graphics card draws it wrongly.
 - `TUNE.water.maxPixels` / `autoQuality` — **keeping it fluid on a big screen.** The picture's cost grows with the number of pixels, and PoseNet shares
   the GPU, so a large display can stutter. The renderer never draws more than `maxPixels` (default 800,000) however big the screen, and with
   `autoQuality` on, if the real frame rate stays under about 45 fps for a few seconds it steps its own render size down until it can keep up (it
